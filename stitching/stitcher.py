@@ -16,18 +16,22 @@ class HomographyMethod(Enum):
     def __call__(self, pairs):
         if self == HomographyMethod.MANUAL_IMPL:
             best_H, curr_iter, max_iter = None, 0, 10
-            k, th, s = 2000, 3, 12
-            while best_H is None:
-                best_H, best_inliers, _ = ransac(pairs, k=2000, th=3, s=12, fitFun=fit_homography, distFun=distance_homography)
+            k, th = 2000, 3
+            while best_H is None or curr_iter < max_iter:
+                # samples = 4  because it's the minimum required to estimate an homography
+                # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
+                best_H, best_inliers, _ = ransac(pairs, max_iter=k, thresh=th, samples=4, fit_fun=fit_homography, dist_fun=distance_homography)
                 curr_iter += 1
-                if curr_iter == max_iter:
-                    print(f"Something went very bad with the homography estimation. Skipping image \"{image_patch.path}\"")
+                if best_H is not None:
+                    break
                 print(f"Could not find an homography. Parameters have been relaxed.")
                 k += 100
                 th += 0.1
-                s += 1
     
         elif self == HomographyMethod.CV_IMPL:
+            # the cv version refines the final homography with the Levenberg-Marquardt method
+            # https://docs.opencv.org/3.4/d9/d0c/group__calib3d.html#gafd3ef89257e27d5235f4467cbb1b6a63
+            # https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm
             src_pts = pairs[:, 0, 0:2].reshape(-1, 1, 2)
             dst_pts = pairs[:, 1, 0:2].reshape(-1, 1, 2)
             best_H, _ = cv.findHomography(src_pts, dst_pts, cv.RANSAC, 5.0)
@@ -220,7 +224,7 @@ class ImageStitching(object):
         ###
         if self._i == 1:
             # this is the first image, no transform is needed
-            H_img_to_mosaic = np.eye(3)
+            best_H = np.eye(3)
         else:
             ###
             #  2.1) find matches for descriptors
@@ -238,15 +242,22 @@ class ImageStitching(object):
             #  2.3) actually estimate homography using lines from matches via RANSAC
             ###
             best_H = self.homography_method(pairs)
-            
-            # # https://ieeexplore.ieee.org/document/6909812
-            # theta = np.arctan2(-best_H[2, 1], -best_H[2, 0])
-            # rot = np.array([[np.cos(theta), -np.sin(theta), 0],
-            #                 [np.sin(theta), np.cos(theta), 0],
-            #                 [0, 0, 1]])
-            
-            H_img_to_mosaic = best_H
+            if best_H is None:
+                print(f"Something went very bad with the homography estimation... removing this patch from list")
+                self._images.pop(self._i - 1)
+                return
         
+        # # TODO requires a new warping algorithm
+        # # https://ieeexplore.ieee.org/document/6909812
+        # theta = np.arctan2(-best_H[2, 1], -best_H[2, 0])
+        # rot = np.array([[np.cos(theta), -np.sin(theta)],
+        #                 [np.sin(theta),  np.cos(theta)]])
+        # H_img_to_mosaic = best_H.copy()
+        # H_img_to_mosaic[0:2, 0:2] = H_img_to_mosaic[0:2, 0:2] @ rot
+        # H_img_to_mosaic[2, 0] = -np.sqrt(best_H[2, 1] ** 2 + best_H[2, 0] ** 2)
+        # H_img_to_mosaic[2, 1] = 0
+        
+        H_img_to_mosaic = best_H
         image_patch.assign_warping_matrix(H_img_to_mosaic)
         
         ###

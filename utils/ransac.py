@@ -57,26 +57,26 @@ class DistanceFunctions(object):
         return d2H, H
 
     
-def ransac(data, k, th, s, fitFun, distFun, desired_score=0):
+def ransac(data, max_iter, thresh, samples, fit_fun, dist_fun, desired_score=0):
     """
     RANSAC implementation
-    :param data:     numpy array
-    :param k:        number of iterations
-    :param th:       distance threshold
-    :param s:        samples to draw in each iteration
-    :param fitFun:   fitting function
-    :param distFun:  distance function
-    :param desired_score:
-    :return:
+    :param data:            numpy array
+    :param max_iter:        number of iterations               [k]
+    :param thresh:          distance threshold                 [t]
+    :param samples:         samples to draw in each iteration  [s]
+    :param fit_fun:         fitting function
+    :param dist_fun:        distance function
+    :param desired_score:   score at which RANSAC can terminate (lower is better, minimum is 0)
+    :return: the best model found, with its inliers and score
     """
     best_score = 0
     best_model = None
     best_inliers = None
-    for i in range(k):
-        idxs = np.random.choice(data.shape[0], size=s, replace=False)
-        model = fitFun(data, idxs)
-        d, _ = distFun(data, model)
-        inliers_set = d < th
+    for i in range(max_iter):
+        idxs = np.random.choice(data.shape[0], size=samples, replace=False)
+        model = fit_fun(data, idxs)
+        d, _ = dist_fun(data, model)
+        inliers_set = d < thresh
         model_score = np.sum(inliers_set)
         if model_score > best_score:
             best_score = model_score

@@ -1,8 +1,13 @@
-from stitching.stitcher import ImageStitching, CrossoverMethod, SeamMethod
+from stitching.stitcher import ImageStitching, CrossoverMethod, SeamMethod, HomographyMethod
 import cv2.cv2 as cv
 
+# TODO remove file info.md
+
 if __name__ == '__main__':
-    stitcher = ImageStitching(seam_method=SeamMethod.SIMPLE, crossover_method=CrossoverMethod.AVERAGE)
+    stitcher = ImageStitching(
+        homography_method=HomographyMethod.MANUAL_IMPL,
+        seam_method=SeamMethod.SIMPLE,
+        crossover_method=CrossoverMethod.AVERAGE)
     stitcher.process_folder("imgs/roofs")
     
     stitcher.stitch_all()
