@@ -6,9 +6,9 @@ import cv2.cv2 as cv
 if __name__ == '__main__':
     stitcher = ImageStitching(
         homography_method=HomographyMethod.MANUAL_IMPL,
-        seam_method=SeamMethod.SIMPLE,
+        seam_method=SeamMethod.ENERGY_BASED,
         crossover_method=CrossoverMethod.AVERAGE)
-    stitcher.process_folder("imgs/roofs")
+    stitcher.process_folder("imgs/river")
     
     stitcher.stitch_all()
     

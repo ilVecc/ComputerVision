@@ -1,63 +1,10 @@
-from enum import Enum, auto
 from pathlib import Path
 
 from cv2 import cv2 as cv
 import numpy as np
 
-from utils.homography import fit_homography, distance_homography, apply_homogeneous
-from utils.ransac import ransac
-
-
-class HomographyMethod(Enum):
-    # https://docs.opencv.org/3.4/d1/de0/tutorial_py_feature_homography.html
-    MANUAL_IMPL = auto()
-    CV_IMPL = auto()
-
-    def __call__(self, pairs):
-        if self == HomographyMethod.MANUAL_IMPL:
-            best_H, curr_iter, max_iter = None, 0, 10
-            k, th = 2000, 3
-            while best_H is None or curr_iter < max_iter:
-                # samples = 4  because it's the minimum required to estimate an homography
-                # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
-                best_H, best_inliers, _ = ransac(pairs, max_iter=k, thresh=th, samples=4, fit_fun=fit_homography, dist_fun=distance_homography)
-                curr_iter += 1
-                if best_H is not None:
-                    break
-                print(f"Could not find an homography. Parameters have been relaxed.")
-                k += 100
-                th += 0.1
-    
-        elif self == HomographyMethod.CV_IMPL:
-            # the cv version refines the final homography with the Levenberg-Marquardt method
-            # https://docs.opencv.org/3.4/d9/d0c/group__calib3d.html#gafd3ef89257e27d5235f4467cbb1b6a63
-            # https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm
-            src_pts = pairs[:, 0, 0:2].reshape(-1, 1, 2)
-            dst_pts = pairs[:, 1, 0:2].reshape(-1, 1, 2)
-            best_H, _ = cv.findHomography(src_pts, dst_pts, cv.RANSAC, 5.0)
-        
-        return best_H
-    
-
-class SeamMethod(Enum):
-    SIMPLE = auto()
-    ENERGY_BASED = auto()
-
-
-class CrossoverMethod(Enum):
-    AVERAGE = auto()
-    BLEND = auto()
-    GAUSSIAN = auto()
-    
-    def __call__(self, t=0.5):
-        if self == CrossoverMethod.AVERAGE:
-            weights = [0.5, 0.5]
-        elif self == CrossoverMethod.BLEND:
-            weights = [t, 1 - t]
-        else:
-            # TODO implement gaussian crossover
-            weights = [0, 0]
-        return weights
+from stitching.stitcher_classes import HomographyMethod, SeamMethod, CrossoverMethod
+from utils.homography import apply_homogeneous
 
 
 class ImagePatch(object):
@@ -75,10 +22,13 @@ class ImagePatch(object):
         # warping
         self.warped = False
         self.H = None
+        self.offset = None
+        self.H_with_offset = None
         self.warped_bb = None  # [origin_x, origin_y, ending_x, ending_y], w.r.t. H reference frame
         self.warped_bb_origin = None  # [origin_x, origin_y], w.r.t. H reference frame
         self.warped_bb_ending = None  # [ending_x, ending_y], w.r.t. H reference frame
-        self.warped_center = None  # [x, y], w.r.t. H reference frame
+        self.warped_bb_size = None  # size of the bb after warping
+        self.warped_bb_center = None  # [x, y], w.r.t. H reference frame
         
         if load:
             self.load_and_sift()
@@ -119,9 +69,18 @@ class ImagePatch(object):
         return bb_world_xy, center_warp
     
     def warp_bounding_box_self(self):
-        self.warped_bb, self.warped_center = self.warp_bounding_box(self.H)
+        self.warped_bb, self.warped_bb_center = self.warp_bounding_box(self.H)
         self.warped_bb_origin = self.warped_bb[0:2]
         self.warped_bb_ending = self.warped_bb[2:4]
+
+        # compute warped image size wrt world
+        self.warped_bb_size = (self.warped_bb_ending - self.warped_bb_origin + 1).astype(int)
+
+        # create and apply offset transform (so we minimize the warped image size, keeping it completely inside the viewbox)
+        self.offset = np.array([[1, 0, -self.warped_bb_origin[0]],
+                                [0, 1, -self.warped_bb_origin[1]],
+                                [0, 0, 1]])
+        self.H_with_offset = self.offset @ self.H
     
     def __hash__(self):
         return self.path.__hash__()
@@ -224,7 +183,7 @@ class ImageStitching(object):
         ###
         if self._i == 1:
             # this is the first image, no transform is needed
-            best_H = np.eye(3)
+            H_img_to_mosaic = np.eye(3)
         else:
             ###
             #  2.1) find matches for descriptors
@@ -239,25 +198,14 @@ class ImageStitching(object):
             pairs[:, :, 0:2] = [(image_patch.keypoints[match.queryIdx].pt, self._train_kp[match.trainIdx].pt) for match in good_matches]
             
             ###
-            #  2.3) actually estimate homography using lines from matches via RANSAC
+            #  2.3) actually estimate homography using lines from matches
             ###
-            best_H = self.homography_method(pairs)
-            if best_H is None:
+            H_img_to_mosaic = self.homography_method(pairs)
+            if H_img_to_mosaic is None:
                 print(f"Something went very bad with the homography estimation... removing this patch from list")
                 self._images.pop(self._i - 1)
                 return
         
-        # # TODO requires a new warping algorithm
-        # # https://ieeexplore.ieee.org/document/6909812
-        # theta = np.arctan2(-best_H[2, 1], -best_H[2, 0])
-        # rot = np.array([[np.cos(theta), -np.sin(theta)],
-        #                 [np.sin(theta),  np.cos(theta)]])
-        # H_img_to_mosaic = best_H.copy()
-        # H_img_to_mosaic[0:2, 0:2] = H_img_to_mosaic[0:2, 0:2] @ rot
-        # H_img_to_mosaic[2, 0] = -np.sqrt(best_H[2, 1] ** 2 + best_H[2, 0] ** 2)
-        # H_img_to_mosaic[2, 1] = 0
-        
-        H_img_to_mosaic = best_H
         image_patch.assign_warping_matrix(H_img_to_mosaic)
         
         ###
@@ -300,67 +248,55 @@ class ImageStitching(object):
         self.mosaic = np.zeros(shape=(mosaic_size[1], mosaic_size[0], 3), dtype=int)
         self.mosaic_mask = np.zeros(shape=(mosaic_size[1], mosaic_size[0])).astype(bool)
         
-        for i, other_image_patch in enumerate(self._images):
-            origin = other_image_patch.warped_bb_origin
-            ending = other_image_patch.warped_bb_ending
-            
-            # compute warped image size wrt world
-            new_size = (ending - origin + 1).astype(int)
-            
-            # create and apply offset transform (so we minimize the warped image size, keeping it completely inside the viewbox)
-            offset_H = np.array([[1, 0, -origin[0]],
-                                 [0, 1, -origin[1]],
-                                 [0, 0, 1]])
-            H = offset_H @ other_image_patch.H
-            
-            # image color info
-            patch = cv.warpPerspective(other_image_patch.img, H, new_size, flags=cv.INTER_LINEAR, borderMode=cv.BORDER_CONSTANT, borderValue=0)
-            
-            # image shape info
-            img_mask = np.ones(shape=other_image_patch.img.shape[0:2], dtype=np.uint8) * 255
-            patch_mask = cv.warpPerspective(img_mask, H, new_size, flags=cv.INTER_LINEAR, borderMode=cv.BORDER_CONSTANT, borderValue=0) == 255
+        for i, image_patch in enumerate(self._images):
             
             ####
-            # stitch patch onto mosaic
+            #   warp the patch accordingly to the homography method used
+            ####
+            
+            # image color info
+            patch = self.homography_method.warp(image_patch.img, image_patch.H_with_offset, image_patch.warped_bb_size)
+            # image shape info
+            img_mask = np.ones(shape=image_patch.img.shape[0:2], dtype=np.uint8) * 255
+            patch_mask = self.homography_method.warp(img_mask, image_patch.H_with_offset, image_patch.warped_bb_size) == 255
+            
+            ####
+            #   stitch patch onto mosaic
             ####
             
             # calculate patch range wrt mosaic
-            patch_origin_wrt_mosaic = (origin - bb_mosaic_min).astype(int)
-            patch_ending_wrt_mosaic = (ending - bb_mosaic_min + 1).astype(int)
+            patch_origin_wrt_mosaic = (image_patch.warped_bb_origin - bb_mosaic_min).astype(int)
+            patch_ending_wrt_mosaic = (image_patch.warped_bb_ending - bb_mosaic_min + 1).astype(int)
             patch_y_range_wrt_mosaic = slice(patch_origin_wrt_mosaic[1], patch_ending_wrt_mosaic[1])
             patch_x_range_wrt_mosaic = slice(patch_origin_wrt_mosaic[0], patch_ending_wrt_mosaic[0])
             
-            # find the shared region in patch reference system and in mosaic reference system
-            ref__mosaic_mask_of_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
-            patch_mask_shared = np.bitwise_and(ref__mosaic_mask_of_patch, patch_mask)
-            mosaic_mask_shared = np.zeros_like(self.mosaic_mask)
-            mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
-            # stitch the warped patch according to its mask (this overwrites shared regions)
+            # calculate the seam using the given method
+            patch_mask_seamed = self.seam_method(self.mosaic, self.mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
+            
+            # stitch the seamed warped patch according to the obtained mask (this overwrites the shared regions)
             ref__mosaic_of_patch = self.mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
-            ref__mosaic_of_patch[patch_mask != 0, :] = patch[patch_mask != 0, :]
+            ref__mosaic_of_patch[patch_mask_seamed, :] = patch[patch_mask_seamed, :]
             
             ####
-            #   deal with overlapping region
+            #   handle color blending in the overlapping region
             ####
             
-            
-            
-            # find optimal stitching seam
-            # https://ieeexplore.ieee.org/document/5304214/
-            theta = self.mosaic[mosaic_mask_shared != 0, :] - patch[patch_mask_shared != 0, :]  # this is not (x,y) though!
-            
-            
+            # find the shared region in mosaic reference system
+            ref__mosaic_mask_of_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
+            patch_mask_shared = np.bitwise_and(ref__mosaic_mask_of_patch, patch_mask_seamed)    # mask of the shared region w.r.t. patch
+            mosaic_mask_shared = np.zeros_like(self.mosaic_mask)                                # mask of the shared region w.r.t. mosaic
+            mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
             
             # use shared mask to blend the colors in the shared region
             weights = self.crossover_method(self.crossover_param)
-            self.mosaic[mosaic_mask_shared != 0, :] \
-                = weights[0] * self.mosaic[mosaic_mask_shared != 0, :] \
-                + weights[1] * patch[patch_mask_shared != 0, :]
+            self.mosaic[mosaic_mask_shared, :] \
+                = weights[0] * self.mosaic[mosaic_mask_shared, :] \
+                + weights[1] * patch[patch_mask_shared, :]
             
-            # lastly, because matrix changes are by reference, update the total mask adding the new patch mask
-            self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_of_patch, patch_mask)
+            # lastly, because matrix changes are by reference, update the total mask adding the patch mask
+            self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_of_patch, patch_mask_seamed)
         
-        # final image still contains float values
+        # final image still contains float values, so we convert it back
         self.mosaic = self.mosaic.astype(np.uint8)
     
     def balance_warpings(self):
