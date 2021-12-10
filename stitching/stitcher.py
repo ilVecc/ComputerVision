@@ -105,7 +105,7 @@ class ImageStitching(object):
         self.seam_method = seam_method
         self.stitching_method = stitching_method
         self.crossover_param = crossover_param
-        self.decimation_factor = decimation_factor
+        self.decimation_factor = np.clip(decimation_factor, 0, 1)
         
         self._images = []
         self._i = 0
@@ -214,12 +214,13 @@ class ImageStitching(object):
         self._train_kp = np.append(self._train_kp, image_patch.keypoints)
         self._train_desc = np.vstack([self._train_desc, image_patch.descriptors])
         
-        train_size = len(self._train_kp)
-        train_size_new = int(self.decimation_factor * train_size)
-        filter_idxs = np.random.choice(np.arange(train_size), size=train_size_new, replace=False)
-        
-        self._train_kp = self._train_kp[filter_idxs]
-        self._train_desc = self._train_desc[filter_idxs]
+        if self.decimation_factor < 1.0:
+            train_size = len(self._train_kp)
+            train_size_new = int(self.decimation_factor * train_size)
+            filter_idxs = np.random.choice(np.arange(train_size), size=train_size_new, replace=False)
+            
+            self._train_kp = self._train_kp[filter_idxs]
+            self._train_desc = self._train_desc[filter_idxs]
         
         ###
         #  4) precompute patch bounding box (not yet the mask though)

@@ -3,7 +3,7 @@ from enum import Enum, auto
 import numpy as np
 from cv2 import cv2 as cv
 
-from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb
+from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb, fast_color_blending
 from utils.homography import fit_homography, distance_homography
 from utils.ransac import ransac
 
@@ -76,7 +76,7 @@ class SeamMethod(Enum):
     ENERGY_BASED = auto()
     
     def __call__(self, mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic):
-    
+        
         # find the shared region in patch reference system
         ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
         patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
@@ -120,9 +120,9 @@ class SeamMethod(Enum):
                 ####
                 
                 # fill the right half of the cut bb
-                mask_in_bb_right = np.zeros(shape=(theta.shape[:-1])).astype(bool)
-                for j in range(theta.shape[0]):
-                    mask_in_bb_right[seam_line[0, j], np.arange(theta.shape[1]) >= seam_line[1, j]] = True
+                xv = np.repeat(np.arange(theta.shape[1])[np.newaxis, :], repeats=theta.shape[0], axis=0)
+                y_mask = np.repeat(seam_line[1][:, np.newaxis], repeats=theta.shape[1], axis=1)
+                mask_in_bb_right = xv >= y_mask
                 
                 # get the mask of all the new pixels added in the image
                 patch_mask_new_pixels = np.bitwise_not(patch_mask.copy())
@@ -164,7 +164,7 @@ class StitchingMethod(Enum):
         
         if self == StitchingMethod.NONE:
             weights = [0.0, 1.0]
-            
+        
         elif self == StitchingMethod.AVERAGE:
             weights = [0.5, 0.5]
         
@@ -177,32 +177,9 @@ class StitchingMethod(Enum):
             if seam_wrt_patch.shape[1] != 0:
                 seam_in_mosaic = mosaic[patch_y_range_wrt_mosaic.start + seam_wrt_patch[0, :], patch_x_range_wrt_mosaic.start + seam_wrt_patch[1, :]]
                 seam_in_patch = patch[seam_wrt_patch[0, :], seam_wrt_patch[1, :]]
-        
+                
                 D = seam_in_mosaic - seam_in_patch
-        
-                # use SLIC to compute superpixels and reduce the computational cost
-                from skimage.segmentation import slic
-                from skimage.measure import regionprops
-                
-                # find superpixels as per paper
-                n_segments = patch_mask.sum() // 200  # we want each superpixel to have around 200 pixels inside it
-                segments = slic(patch, n_segments=n_segments, compactness=5, sigma=5, mask=patch_mask)
-                segments_centroids_position = np.array([props.centroid for props in regionprops(segments)]).T
-                # get actual number of segments
-                n_segments = segments_centroids_position.shape[1]
-                # labels start from 1 (0 is outside the mask)
-                segments_centroids_color = np.array([patch[segments == (i + 1)].mean(axis=0) for i in range(n_segments)])
-                
-                # apply the color interpolation "as per paper"
-                sigma_1, sigma_2 = (0.05 + 0.5) / 2, (0.5 + 5) / 2
-                W = patch.shape[1]
-                color = seam_in_patch[:, np.newaxis, :] - segments_centroids_color[np.newaxis, :, :]
-                distance = seam_wrt_patch[:, :, np.newaxis] - segments_centroids_position[:, np.newaxis, :]
-                # TODO
-                #  Here the paper uses a  *  without specifying whether this is a multiplication or a convolution.
-                #  Since the values are scalars, I supposed the first one and thus simplified applying exponential rules.
-                w = np.exp(-(np.linalg.norm(color, ord=2, axis=2) / sigma_1) ** 2 - (np.linalg.norm(distance, ord=2, axis=0) / (W * sigma_2)) ** 2)
-                w = (w - w.min()) / (w.max() - w.min())
+                w, segments, n_segments = fast_color_blending(patch, patch_mask, seam_in_patch, seam_wrt_patch)
                 
                 # calculate the color change and apply it to each superpixel, modifying the patch
                 T = (w.T @ D).astype(np.uint8)
