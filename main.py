@@ -1,4 +1,4 @@
-from stitching.stitcher import ImageStitching, CrossoverMethod, SeamMethod, HomographyMethod
+from stitching.stitcher import ImageStitching, StitchingMethod, SeamMethod, HomographyMethod
 import cv2.cv2 as cv
 
 # TODO remove file info.md
@@ -7,8 +7,8 @@ if __name__ == '__main__':
     stitcher = ImageStitching(
         homography_method=HomographyMethod.MANUAL_IMPL,
         seam_method=SeamMethod.ENERGY_BASED,
-        crossover_method=CrossoverMethod.AVERAGE)
-    stitcher.process_folder("imgs/river")
+        stitching_method=StitchingMethod.AVERAGE)
+    stitcher.process_folder("imgs/biennale")
     
     stitcher.stitch_all()
     

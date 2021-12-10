@@ -29,10 +29,10 @@ class HomographyMethod(Enum):
                 k += 100
                 th += 0.1
         
+        # https://ieeexplore.ieee.org/document/6909812
         elif self == HomographyMethod.SPHP_IMPL:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
             # # TODO requires a new warping algorithm
-            # # https://ieeexplore.ieee.org/document/6909812
             # theta = np.arctan2(-best_H[2, 1], -best_H[2, 0])
             # rot = np.array([[np.cos(theta), -np.sin(theta)],
             #                 [np.sin(theta),  np.cos(theta)]])
@@ -76,23 +76,26 @@ class SeamMethod(Enum):
     ENERGY_BASED = auto()
     
     def __call__(self, mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic):
+    
+        # find the shared region in patch reference system
+        ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
+        patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
+        
         if self == SeamMethod.SIMPLE:
             # stitch the warped patch according to its mask (this overwrites shared regions)
             mask = patch_mask
+            seam_mask = cv.Scharr(patch_mask_shared.astype(np.uint8) * 255, ddepth=-1, dx=1, dy=0)
+            seam = np.vstack(np.where(seam_mask))
         
         # https://ieeexplore.ieee.org/document/5304214/
         elif self == SeamMethod.ENERGY_BASED:
-
-            # find the shared region in patch reference system
-            ref__mosaic_mask_of_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
-            patch_mask_shared = np.bitwise_and(ref__mosaic_mask_of_patch, patch_mask)  # mask of the shared region w.r.t. patch
             
             # trace the shared region bounding box and use it as input for the algorithm
             x, y, w, h = biggest_shared_region_bb(patch_mask_shared)
             # if x is None then this is the first image and thus cannot have overlapping regions
             if x is None:
                 # this is the first image
-                mask = patch_mask
+                mask, seam = SeamMethod.SIMPLE.__call__(mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
             else:
                 mask_shared_in_bb = patch_mask_shared[y:y + h, x:x + w].copy()
                 ref__patch_in_bb = patch[y:y + h, x:x + w]
@@ -102,7 +105,7 @@ class SeamMethod(Enum):
                 #   find optimal stitching seam
                 ####
                 theta = ref__mosaic_in_bb - ref__patch_in_bb
-                # line.shape == (2, theta.shape[0]),  rows are [y; x]
+                # line.shape == (2, theta.shape[0]),  pixels are [y; x]
                 seam_line = energy_based_seam_line(img=ref__mosaic_in_bb, theta=theta, theta_mask=mask_shared_in_bb)
                 
                 # # draw the seam line
@@ -122,7 +125,6 @@ class SeamMethod(Enum):
                     mask_in_bb_right[seam_line[0, j], np.arange(theta.shape[1]) >= seam_line[1, j]] = True
                 
                 # get the mask of all the new pixels added in the image
-                ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
                 patch_mask_new_pixels = np.bitwise_not(patch_mask.copy())
                 patch_mask_new_pixels = np.bitwise_or(patch_mask_new_pixels, ref__mosaic_mask_in_patch)  # TODO could be optimized
                 patch_mask_new_pixels = np.bitwise_not(patch_mask_new_pixels)
@@ -144,34 +146,73 @@ class SeamMethod(Enum):
                 
                 # final re-masking using the patch mask
                 mask = np.bitwise_and(seamed_patch_mask, patch_mask)
+                seam = seam_line + np.array([[y, x]]).T
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
         
-        return mask
+        return mask, seam  # pixels are [y; x]
 
 
-class CrossoverMethod(Enum):
+class StitchingMethod(Enum):
     NONE = auto()
     AVERAGE = auto()
-    BLEND = auto()
-    GAUSSIAN = auto()
+    WEIGHTED = auto()
+    SUPERPIXEL = auto()
     
-    def __call__(self, t=0.5):
-        if self == CrossoverMethod.NONE:
+    def __call__(self, mosaic, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
+        
+        if self == StitchingMethod.NONE:
             weights = [0.0, 1.0]
             
-        elif self == CrossoverMethod.AVERAGE:
+        elif self == StitchingMethod.AVERAGE:
             weights = [0.5, 0.5]
         
-        elif self == CrossoverMethod.BLEND:
+        elif self == StitchingMethod.WEIGHTED:
             weights = [t, 1 - t]
         
-        elif self == CrossoverMethod.GAUSSIAN:
-            # TODO implement gaussian crossover
-            weights = [0, 0]
+        # https://ieeexplore.ieee.org/document/8676030
+        elif self == StitchingMethod.SUPERPIXEL:
+            # check first image
+            if seam_wrt_patch.shape[1] != 0:
+                seam_in_mosaic = mosaic[patch_y_range_wrt_mosaic.start + seam_wrt_patch[0, :], patch_x_range_wrt_mosaic.start + seam_wrt_patch[1, :]]
+                seam_in_patch = patch[seam_wrt_patch[0, :], seam_wrt_patch[1, :]]
+        
+                D = seam_in_mosaic - seam_in_patch
+        
+                # use SLIC to compute superpixels and reduce the computational cost
+                from skimage.segmentation import slic
+                from skimage.measure import regionprops
+                
+                # find superpixels as per paper
+                n_segments = patch_mask.sum() // 200  # we want each superpixel to have around 200 pixels inside it
+                segments = slic(patch, n_segments=n_segments, compactness=5, sigma=5, mask=patch_mask)
+                segments_centroids_position = np.array([props.centroid for props in regionprops(segments)]).T
+                # get actual number of segments
+                n_segments = segments_centroids_position.shape[1]
+                # labels start from 1 (0 is outside the mask)
+                segments_centroids_color = np.array([patch[segments == (i + 1)].mean(axis=0) for i in range(n_segments)])
+                
+                # apply the color interpolation "as per paper"
+                sigma_1, sigma_2 = (0.05 + 0.5) / 2, (0.5 + 5) / 2
+                W = patch.shape[1]
+                color = seam_in_patch[:, np.newaxis, :] - segments_centroids_color[np.newaxis, :, :]
+                distance = seam_wrt_patch[:, :, np.newaxis] - segments_centroids_position[:, np.newaxis, :]
+                # TODO
+                #  Here the paper uses a  *  without specifying whether this is a multiplication or a convolution.
+                #  Since the values are scalars, I supposed the first one and thus simplified applying exponential rules.
+                w = np.exp(-(np.linalg.norm(color, ord=2, axis=2) / sigma_1) ** 2 - (np.linalg.norm(distance, ord=2, axis=0) / (W * sigma_2)) ** 2)
+                w = (w - w.min()) / (w.max() - w.min())
+                
+                # calculate the color change and apply it to each superpixel, modifying the patch
+                T = (w.T @ D).astype(np.uint8)
+                for i in range(n_segments):
+                    patch[segments == (i + 1)] += T[i, :]
+            
+            # finally, simply weight just the patch in the shared region
+            weights = [0.0, 1.0]
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
         
-        return weights
+        return weights, patch

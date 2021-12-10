@@ -82,7 +82,7 @@ def energy_based_seam_line(img, theta, theta_mask):
             best_score = score
             best_cols = cols
     
-    best_pixels = np.vstack([np.arange(len(best_cols)), best_cols])
+    best_pixels = np.vstack([np.arange(len(best_cols)), best_cols])  # pixels are [y; x]
     return best_pixels
 
 
