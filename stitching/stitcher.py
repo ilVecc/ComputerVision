@@ -158,13 +158,13 @@ class ImageStitching(object):
         self._images.append(img_patch)
         return True
     
-    # FIXME i don't take into account pending images
+    # FIXME we don't take into account pending images
     def process_folder(self, folder):
         self.add_folder(folder)
         while self._i < len(self._images):
             self.process_next()
 
-    # FIXME i don't take into account pending images
+    # FIXME we don't take into account pending images
     def process_image(self, path):
         if self.add_image(path):
             self.process_next()
@@ -193,6 +193,10 @@ class ImageStitching(object):
             ###
             #  2.2) filter valid matches
             ###
+            # TODO
+            #  Keypoints are in local coordinate system! This means that when we add them to  self._train_kp  they refer to the original image,
+            #  and not to the patch in the mosaic. Before adding them to self._train_kp, we must transform their  .pt  with the  H_img_to_mosaic
+            #  we obtained after the matching process!
             # pairs is (n, m, 3), with  n  2D homogeneous points for each of the  m  sets of selected matches
             pairs = np.ones(shape=(len(good_matches), 2, 3))
             pairs[:, :, 0:2] = [(image_patch.keypoints[match.queryIdx].pt, self._train_kp[match.trainIdx].pt) for match in good_matches]
