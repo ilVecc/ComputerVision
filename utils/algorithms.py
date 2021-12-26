@@ -1,4 +1,4 @@
-import cv2.cv2 as cv
+﻿import cv2.cv2 as cv
 import numpy as np
 
 
@@ -12,7 +12,7 @@ def energy_based_seam_line(img, theta, theta_mask, fast_method=True):
     
     # construct the Energy function
     e = 0.5 * cv.convertScaleAbs(cv.Scharr(theta, ddepth=-1, dx=1, dy=0)).astype(np.double) \
-      + 0.5 * cv.convertScaleAbs(cv.Scharr(theta, ddepth=-1, dx=0, dy=1)).astype(np.double)
+        + 0.5 * cv.convertScaleAbs(cv.Scharr(theta, ddepth=-1, dx=0, dy=1)).astype(np.double)
     
     # TODO this  .sum()  is not specified in the original paper, but I see no other way around this...
     img = img.sum(axis=2).astype(np.double)
@@ -23,8 +23,8 @@ def energy_based_seam_line(img, theta, theta_mask, fast_method=True):
     if fast_method:
         # We replaced the 2-for monstrosity with a specifically designed kernel and a convolution for better computational cost.
         # It doesn't yield to the same F matrix, but the result has equivalent meaning and thus e_ipf works quite as well.
-        k = np.array([[ 0,  0,  0],
-                      [ 0,  3,  0],
+        k = np.array([[0, 0, 0],
+                      [0, 3, 0],
                       [-1, -1, -1]])
         diff_color = cv.filter2D(img, ddepth=cv.CV_64F, kernel=k, borderType=cv.BORDER_ISOLATED)
         diff_error = cv.filter2D(e, ddepth=cv.CV_64F, kernel=k, borderType=cv.BORDER_ISOLATED)
@@ -96,32 +96,60 @@ def energy_based_seam_line(img, theta, theta_mask, fast_method=True):
     return best_pixels
 
 
-# https://ieeexplore.ieee.org/document/8676030
-def fast_color_blending(patch, patch_mask, seam_in_patch, seam_wrt_patch):
+# https://ieeexplore.ieee.org/document/8676030  or  https://ieeexplore.ieee.org/document/8676030
+def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_patch, use_distance=True):
     # use SLIC to compute superpixels and reduce the computational cost
     from skimage.segmentation import slic
     from skimage.measure import regionprops
     
     # find superpixels as per paper
-    n_segments = patch_mask.sum() // 400  # we want each superpixel to have around 200 pixels inside it
-    segments = slic(patch, n_segments=n_segments, compactness=5, sigma=5, mask=patch_mask)
-    segments_centroids_position = np.array([props.centroid for props in regionprops(segments)]).T
+    # we should want each superpixel to have around 200 pixels inside it, but this is very slow on large images,
+    # so we simply fix a number of desired segments to speed everything up
+    n_segments = np.sum(patch_mask) // 300
+    segments = slic(patch, n_segments=n_segments, compactness=7, sigma=5, mask=patch_mask)
+    segments_centroids_coords = np.array([props.centroid for props in regionprops(segments)]).T
     # get actual number of segments
-    n_segments = segments_centroids_position.shape[1]
+    n_segments = segments_centroids_coords.shape[1]
     # labels start from 1 (0 is outside the mask)
-    segments_centroids_color = np.array([patch[segments == (i + 1)].mean(axis=0) for i in range(n_segments)])
+    segments_centroids_color_in_patch = np.array([patch[segments == (i + 1)].mean(axis=0) for i in range(n_segments)])
     
-    # apply the color interpolation "as per paper"
-    sigma_1, sigma_2 = (0.05 + 0.5) / 2, (0.5 + 5) / 2
-    W = patch.shape[1]
-    color = seam_in_patch[:, np.newaxis, :] - segments_centroids_color[np.newaxis, :, :]
-    distance = seam_wrt_patch[:, :, np.newaxis] - segments_centroids_position[:, np.newaxis, :]
-    # TODO
-    #  Here the paper uses a  *  without specifying whether this is a multiplication or a convolution.
-    #  Since the values are scalars, I supposed the first one and thus simplified applying exponential rules.
-    w = np.exp(-(np.linalg.norm(color, ord=2, axis=2) / sigma_1) ** 2 - (np.linalg.norm(distance, ord=2, axis=0) / (W * sigma_2)) ** 2)
-    w = (w - w.min()) / (w.max() - w.min())
+    diff_color = seam_color_in_patch[:, np.newaxis, :] - segments_centroids_color_in_patch[np.newaxis, :, :]
+    if use_distance:
+        # https://ieeexplore.ieee.org/document/8676030
+        diff_color /= 255
+        diff_coord = seam_coords_wrt_patch[:, :, np.newaxis] - segments_centroids_coords[:, np.newaxis, :]
+
+        # # cool distance visualization
+        # patch_copy = patch.copy()
+        # for i in range(657):
+        #     x1 = int(segments_centroids_coords[1, i])
+        #     y1 = int(segments_centroids_coords[0, i])
+        #     x2 = int(x1 + diff_coord[1, 240, i])
+        #     y2 = int(y1 + diff_coord[0, 240, i])
+        #     cv.line(patch_copy, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
+        # import matplotlib.pyplot as pt; pt.imshow(patch_copy); pt.show()
+        
+        # apply the color interpolation "as per paper"
+        sigma_1, sigma_2, W = 0.05, 0.5, patch.shape[1]
+        
+        # TODO
+        #  Here the paper uses a  *  without specifying whether this is a multiplication or a convolution.
+        #  Since the values are scalars, I supposed the first one and thus simplified applying exponential rules.
+        w = np.exp(-(np.linalg.norm(diff_color, ord=2, axis=2) / sigma_1) ** 2 - (np.linalg.norm(diff_coord, ord=2, axis=0) / (W * sigma_2)) ** 2)
+        
+        # exp_color = np.exp(-(np.linalg.norm(diff_color, ord=2, axis=2) / sigma_1) ** 2)
+        # exp_coord = np.exp(-(np.linalg.norm(diff_coord, ord=2, axis=0) / (W * sigma_2)) ** 2)
+        # w = cv.filter2D(exp_color, ddepth=cv.CV_64F, kernel=exp_coord, borderType=cv.BORDER_ISOLATED)  # performs cross correlation!
+        
+        # normalize weights
+        w = (w - w.min(axis=0)) / (w.max(axis=0) - w.min(axis=0))
+        w[w == float('nan')] = 0  # when the range is 0 we have a division by zero, so we fix the weight to 0
     
+    else:
+        # https://ieeexplore.ieee.org/document/9115682/
+        sigma = 50
+        w = np.exp(-0.5 * (np.linalg.norm(diff_color, ord=2, axis=2) / sigma) ** 2)
+        
     return w, segments, n_segments
 
 
@@ -147,3 +175,46 @@ def biggest_shared_region_bb(img):
     # find biggest contour
     areas = [cv.contourArea(c) for c in contours]
     return cv.boundingRect(contours[np.argmax(areas)]) if areas else (None, None, None, None)
+
+
+# https://stackoverflow.com/a/30136404/7742892
+def biggest_rectangle_in_mask(mask):
+    # set up initial parameters
+    r, c = mask.shape
+    ul_r = 0    # upper-left row        (param #0)
+    ul_c = 0    # upper-left column     (param #1)
+    br_r = r-1  # bottom-right row      (param #2)
+    br_c = c-1  # bottom-right column   (param #3)
+    
+    parameters = [0, 1, 2, 3]  # parameters left to be updated
+    pidx = 0  # index of parameter currently being updated
+    
+    # shrink region until acceptable
+    while len(parameters) > 0:  # update until all parameters reach bounds
+        
+        # 1. update parameter number
+        pidx %= len(parameters)
+        p = parameters[pidx]  # current parameter number
+        
+        # 2. update current parameter
+        # 3. grab newest part of region (row or column)
+        if p == 0:
+            ul_r += 1
+            border = mask[ul_r, ul_c:(br_c+1)]
+        elif p == 1:
+            ul_c += 1
+            border = mask[ul_r:(br_r+1), ul_c]
+        elif p == 2:
+            br_r -= 1
+            border = mask[br_r, ul_c:(br_c+1)]
+        else:
+            br_c -= 1
+            border = mask[ul_r:(br_r+1), br_c]
+        
+        # 4. if the new region has only zeros, stop shrinking the current parameter
+        if np.count_nonzero(border) == border.size:
+            del parameters[pidx]
+        
+        pidx += 1
+    
+    return ul_r, ul_c, br_r, br_c

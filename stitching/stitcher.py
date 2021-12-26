@@ -4,6 +4,7 @@ from cv2 import cv2 as cv
 import numpy as np
 
 from stitching.stitcher_classes import HomographyMethod, SeamMethod, StitchingMethod
+from utils.algorithms import biggest_rectangle_in_mask
 from utils.homography import apply_homogeneous
 
 
@@ -16,14 +17,14 @@ class ImagePatch(object):
         # loading
         self.loaded = False
         self.img = None
-        self.keypoints = None
+        self.keypoints = None  # keypoints position is updated after assigning the warping
         self.descriptors = None
         self._gray = None
         # warping
         self.warped = False
         self.H = None
         self.offset = None
-        self.H_with_offset = None
+        self.H_without_offset = None
         self.warped_bb = None  # [origin_x, origin_y, ending_x, ending_y], w.r.t. H reference frame
         self.warped_bb_origin = None  # [origin_x, origin_y], w.r.t. H reference frame
         self.warped_bb_ending = None  # [ending_x, ending_y], w.r.t. H reference frame
@@ -51,6 +52,11 @@ class ImagePatch(object):
     def assign_warping_matrix(self, H):
         self.warped = True
         self.H = H
+        # transform the keypoints'  .pt  with the  H  homography, so to have the new keypoints' position after the warping
+        kp_pt = np.array([kp.pt for kp in self.keypoints])
+        warped_kp_pt = apply_homogeneous(kp_pt.T, self.H)
+        for i in range(len(self.keypoints)):
+            self.keypoints[i].pt = tuple(warped_kp_pt[:, i])
 
     def warp_bounding_box(self, warp_H):
         h, w, d = self.img.shape
@@ -76,11 +82,11 @@ class ImagePatch(object):
         # compute warped image size wrt world
         self.warped_bb_size = (self.warped_bb_ending - self.warped_bb_origin + 1).astype(int)
 
-        # create and apply offset transform (so we minimize the warped image size, keeping it completely inside the viewbox)
+        # create and apply offset transform (so we minimize the warped image size, keeping it completely inside the viewbox, which is in the center)
         self.offset = np.array([[1, 0, -self.warped_bb_origin[0]],
                                 [0, 1, -self.warped_bb_origin[1]],
                                 [0, 0, 1]])
-        self.H_with_offset = self.offset @ self.H
+        self.H_without_offset = self.offset @ self.H
     
     def __hash__(self):
         return self.path.__hash__()
@@ -99,13 +105,17 @@ class ImageStitching(object):
                  homography_method=HomographyMethod.MANUAL_IMPL,
                  seam_method=SeamMethod.SIMPLE,
                  stitching_method=StitchingMethod.AVERAGE, crossover_param=None,
-                 decimation_factor=0.1):
+                 decimation_factor=0.1,
+                 make_rectangle=True,
+                 trim_borders=True):
         # parameters
         self.homography_method = homography_method
         self.seam_method = seam_method
         self.stitching_method = stitching_method
         self.crossover_param = crossover_param
         self.decimation_factor = np.clip(decimation_factor, 0, 1)
+        self.make_rectangle = make_rectangle
+        self.trim_borders = trim_borders
         
         self._images = []
         self._i = 0
@@ -193,10 +203,6 @@ class ImageStitching(object):
             ###
             #  2.2) filter valid matches
             ###
-            # TODO
-            #  Keypoints are in local coordinate system! This means that when we add them to  self._train_kp  they refer to the original image,
-            #  and not to the patch in the mosaic. Before adding them to self._train_kp, we must transform their  .pt  with the  H_img_to_mosaic
-            #  we obtained after the matching process!
             # pairs is (n, m, 3), with  n  2D homogeneous points for each of the  m  sets of selected matches
             pairs = np.ones(shape=(len(good_matches), 2, 3))
             pairs[:, :, 0:2] = [(image_patch.keypoints[match.queryIdx].pt, self._train_kp[match.trainIdx].pt) for match in good_matches]
@@ -211,6 +217,7 @@ class ImageStitching(object):
                 return
         
         image_patch.assign_warping_matrix(H_img_to_mosaic)
+        
         
         ###
         #  3) add keypoints and descriptors to training set
@@ -259,11 +266,15 @@ class ImageStitching(object):
             #   warp the patch accordingly to the homography method used
             ####
             
+            # Here we use  H_without_offset  because otherwise (using  H ) the warped image
+            # would not be inside the given bounding box, which is centered in (0, 0).
+            # The relationship of this image and the first image is still described by  H .
+            
             # image color info
-            patch = self.homography_method.warp(image_patch.img, image_patch.H_with_offset, image_patch.warped_bb_size)
+            patch = self.homography_method.warp(image_patch.img, image_patch.H_without_offset, image_patch.warped_bb_size)
             # image shape info
             img_mask = np.ones(shape=image_patch.img.shape[0:2], dtype=np.uint8) * 255
-            patch_mask = self.homography_method.warp(img_mask, image_patch.H_with_offset, image_patch.warped_bb_size) == 255
+            patch_mask = self.homography_method.warp(img_mask, image_patch.H_without_offset, image_patch.warped_bb_size) == 255
             
             ####
             #   create patch to stitch onto mosaic
@@ -284,30 +295,75 @@ class ImageStitching(object):
             ####
             # get the weights for the overlapping regions and eventually an updated patch
             weights, patch = self.stitching_method(
-                self.mosaic, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.crossover_param)
+                self.mosaic, patch, patch_mask_seam, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.crossover_param)
             
             # stitch the warped patch according to the obtained seamed mask (this overwrites the shared regions)
             ref__mosaic_in_patch = self.mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
             ref__mosaic_in_patch[patch_mask_seam, :] = patch[patch_mask_seam, :]
-
+            
             # find the shared region in mosaic reference system
             ref__mosaic_mask_in_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
-            patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask_seam)  # mask of the shared region w.r.t. patch
-            mosaic_mask_shared = np.zeros_like(self.mosaic_mask)  # mask of the shared region w.r.t. mosaic
-            mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
-
-            # use shared mask to blend the colors in the shared region with the weights
-            self.mosaic[mosaic_mask_shared, :] \
-                = weights[0] * self.mosaic[mosaic_mask_shared, :] \
-                + weights[1] * patch[patch_mask_shared, :]
+            # patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask_seam)  # mask of the shared region w.r.t. patch
+            # mosaic_mask_shared = np.zeros_like(self.mosaic_mask)  # mask of the shared region w.r.t. mosaic
+            # mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
+            #
+            # TODO this is broken, the shared mask in mosaic already has the new colors now
+            # # use shared mask to blend the colors in the shared region with the weights
+            # self.mosaic[mosaic_mask_shared, :] \
+            #     = weights[0] * self.mosaic[mosaic_mask_shared, :] \
+            #     + weights[1] * patch[patch_mask_shared, :]
             
             # lastly, because matrix changes are by reference, update the total mask adding the patch mask
             self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask_seam)
         
         # final image still contains float values, so we convert it back
         self.mosaic = self.mosaic.astype(np.uint8)
-    
-    def balance_warpings(self):
-        # calculate image center and recalculate every H so to balance the image
-        pass
 
+        if self.make_rectangle:
+            rect = biggest_rectangle_in_mask(self.mosaic_mask)
+            range_y = slice(rect[0], rect[2] + 1)
+            range_x = slice(rect[1], rect[3] + 1)
+            if self.trim_borders:
+                self.mosaic = self.mosaic[range_y, range_x, :]
+                self.mosaic_mask = self.mosaic_mask[range_y, range_x]
+            else:
+                self.mosaic_mask = np.zeros_like(self.mosaic_mask).astype(dtype=bool)
+                self.mosaic_mask[range_y, range_x] = True
+                self.mosaic[np.bitwise_not(self.mosaic_mask), :] = [0, 0, 0]
+    
+    def balance_warpings(self, use_central=False, rigorous=False):
+        # calculate image center and recalculate every H so to balance the image
+
+        Hs = np.vstack([image_patch.H[np.newaxis, ...] for image_patch in self._images])
+        
+        if use_central:
+            # 1) average of the translations in the homographies
+            # 2) average of the rotations in the homographies
+            # 3) average of the projections in the homographies
+            
+            if rigorous:
+                # TODO this feels wrong, an homography is not that simple
+                w, v = np.linalg.eig(Hs)  # val, vec
+                w_avg = w.mean(axis=0)
+                v_avg = v.mean(axis=0)
+                H_avg = v_avg @ np.diag(w_avg) @ np.linalg.inv(v_avg)
+                H_avg /= H_avg[2, 2]
+            else:
+                # TODO this feels wrong too :)
+                H_avg = Hs.mean(axis=0)
+        
+        else:
+            ts = Hs[:, 0:2, 2]
+            t_avg = ts.mean(axis=0)
+            
+            dist = np.linalg.norm(ts - t_avg.T, axis=1)
+            H_avg = Hs[np.argmin(dist), ...]
+
+        H_avg_inv = np.linalg.inv(H_avg)
+        for image_patch in self._images:
+            H_new = H_avg_inv @ image_patch.H
+            image_patch.assign_warping_matrix(H_new)
+            # recompute bounding box
+            image_patch.warp_bounding_box_self()
+        
+        return H_avg
