@@ -5,6 +5,7 @@ from cv2 import cv2 as cv
 
 from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb, fast_color_blending
 from utils.homography import fit_homography, distance_homography
+from utils.line import fit_line2D, distance_line2D
 from utils.ransac import ransac
 
 
@@ -150,15 +151,16 @@ class SeamMethod(Enum):
 
 
 class StitchingMethod(Enum):
-    NONE = auto()
+    DIRECT = auto()
     AVERAGE = auto()
     WEIGHTED = auto()
+    ALPHA_GRADIENT = auto()
     SUPERPIXEL_BASED = auto()
     SUPERPIXEL_BASED_ALT = auto()
     
     def __call__(self, mosaic, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
         
-        if self == StitchingMethod.NONE:
+        if self == StitchingMethod.DIRECT:
             weights = [0.0, 1.0]
         
         elif self == StitchingMethod.AVERAGE:
@@ -166,7 +168,25 @@ class StitchingMethod(Enum):
         
         elif self == StitchingMethod.WEIGHTED:
             weights = [t, 1 - t]
-
+        
+        elif self == StitchingMethod.ALPHA_GRADIENT:
+            # fit line on the seam
+            best_line, curr_iter, max_iter = None, 0, 10
+            k, th = 1000, 3
+            while best_line is None or curr_iter < max_iter:
+                # samples = 4  because it's the minimum required to estimate an homography
+                # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
+                best_line, best_inliers, _ = ransac(seam_wrt_patch, max_iter=k, thresh=th, samples=2, fit_fun=fit_line2D, dist_fun=distance_line2D)
+                curr_iter += 1
+                if best_line is not None:
+                    break
+                print(f"Could not find a line. Parameters have been relaxed.")
+                k += 20
+                th += 0.1
+            # calculate gradient orthogonal to the line
+            
+            
+        
         # https://ieeexplore.ieee.org/document/9115682/  or  https://ieeexplore.ieee.org/document/8676030
         elif self == StitchingMethod.SUPERPIXEL_BASED_ALT \
                 or self == StitchingMethod.SUPERPIXEL_BASED:

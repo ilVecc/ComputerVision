@@ -41,6 +41,9 @@ class ImagePatch(object):
         
         try:
             self.img = cv.imread(self.path)
+            # self.img[:, :, 0] = cv.equalizeHist(self.img[:, :, 0])
+            # self.img[:, :, 1] = cv.equalizeHist(self.img[:, :, 1])
+            # self.img[:, :, 2] = cv.equalizeHist(self.img[:, :, 2])
         except Exception as ex:
             print(f"Failed to load image {self.path} due to exception:")
             print(ex)
