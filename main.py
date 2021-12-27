@@ -7,7 +7,8 @@ if __name__ == '__main__':
     stitcher = ImageStitching(
         homography_method=HomographyMethod.MANUAL_IMPL,
         seam_method=SeamMethod.ENERGY_BASED,
-        stitching_method=StitchingMethod.AVERAGE,
+        stitching_method=StitchingMethod.SUPERPIXEL_BASED,
+        stitching_param=100,
         decimation_factor=0.75,
         make_rectangle=False,
         trim_borders=False

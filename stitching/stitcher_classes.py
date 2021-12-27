@@ -83,7 +83,8 @@ class SeamMethod(Enum):
         patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
         
         if self == SeamMethod.SIMPLE:
-            # stitch the warped patch according to its mask (this overwrites shared regions)
+            # TODO broken
+            # the seam is a simple vertical line
             seamed_patch_mask = patch_mask
             seam_mask = cv.Scharr(patch_mask_shared.astype(np.uint8) * 255, ddepth=-1, dx=1, dy=0)
             seam_wrt_patch = np.vstack(np.where(seam_mask))
@@ -128,11 +129,6 @@ class SeamMethod(Enum):
                 y_mask = np.repeat(seam_line[1][:, np.newaxis] - seam_x_min, repeats=seam_x_size, axis=1)
                 mask_in_bb_right = xv >= y_mask
                 
-                # # get the mask of all the new pixels added in the image
-                # patch_mask_new_pixels = np.bitwise_not(patch_mask.copy())
-                # patch_mask_new_pixels = np.bitwise_or(patch_mask_new_pixels, ref__mosaic_mask_in_patch)  # TODO could be optimized
-                # patch_mask_new_pixels = np.bitwise_not(patch_mask_new_pixels)
-                
                 # test side: if the shared region is shifted on the left, then use the mask (right-filling), otherwise use its inverse (left-filling)
                 seamed_patch_mask = patch_mask.copy()
                 mask_in_bb = mask_in_bb_right if x + w / 2 < patch_mask.shape[1] / 2 else np.bitwise_not(mask_in_bb_right)
@@ -157,9 +153,10 @@ class StitchingMethod(Enum):
     ALPHA_GRADIENT = auto()
     SUPERPIXEL_BASED = auto()
     SUPERPIXEL_BASED_ALT = auto()
+    POISSON = auto()
     
     def __call__(self, mosaic, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
-        
+
         if self == StitchingMethod.DIRECT:
             weights = [0.0, 1.0]
         
@@ -170,30 +167,44 @@ class StitchingMethod(Enum):
             weights = [t, 1 - t]
         
         elif self == StitchingMethod.ALPHA_GRADIENT:
-            # fit line on the seam
-            best_line, curr_iter, max_iter = None, 0, 10
-            k, th = 1000, 3
-            while best_line is None or curr_iter < max_iter:
-                # samples = 4  because it's the minimum required to estimate an homography
-                # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
-                best_line, best_inliers, _ = ransac(seam_wrt_patch, max_iter=k, thresh=th, samples=2, fit_fun=fit_line2D, dist_fun=distance_line2D)
-                curr_iter += 1
-                if best_line is not None:
-                    break
-                print(f"Could not find a line. Parameters have been relaxed.")
-                k += 20
-                th += 0.1
-            # calculate gradient orthogonal to the line
-            
-            
+
+            # TODO broken
+
+            if seam_wrt_patch.shape[1] != 0:
+                # fit line on the seam
+                best_line, curr_iter, max_iter = None, 0, 10
+                k, th = 1000, 3
+                while best_line is None or curr_iter < max_iter:
+                    # samples = 4  because it's the minimum required to estimate an homography
+                    # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
+                    best_line, best_inliers, _ = ransac(seam_wrt_patch, max_iter=k, thresh=th, samples=2, fit_fun=fit_line2D, dist_fun=distance_line2D)
+                    curr_iter += 1
+                    if best_line is not None:
+                        break
+                    print(f"Could not find a line. Parameters have been relaxed.")
+                    k += 20
+                    th += 0.1
+                # calculate gradient orthogonal to the line
+                m = -best_line[0]
+                q = best_line[1]
+                q = t / np.cos(np.arctan(m)) - q  # new line
+                xv, yv = np.meshgrid(np.arange(patch.shape[0]), np.arange(patch.shape[1]), indexing='ij')
+                gradient_mask = np.zeros_like(patch_mask)
+                gradient_mask[m * xv + q - yv > 0] = 1.0
+                # blur line to get smooth transition
+                kernel_size = t * np.cos(np.arctan(-1/m))
+                gradient_mask = cv.GaussianBlur(gradient_mask, (kernel_size, kernel_size), 0)
+                patch = patch * gradient_mask
         
         # https://ieeexplore.ieee.org/document/9115682/  or  https://ieeexplore.ieee.org/document/8676030
-        elif self == StitchingMethod.SUPERPIXEL_BASED_ALT \
-                or self == StitchingMethod.SUPERPIXEL_BASED:
-            use_distance = self == StitchingMethod.SUPERPIXEL_BASED
-            
+        elif self == StitchingMethod.SUPERPIXEL_BASED_ALT or self == StitchingMethod.SUPERPIXEL_BASED:
+
+            # simply weight just the patch in the shared region
+            weights = [0.0, 1.0]
+
             # check first image
             if seam_wrt_patch.shape[1] != 0:
+                use_distance = self == StitchingMethod.SUPERPIXEL_BASED
                 seam_in_mosaic = mosaic[patch_y_range_wrt_mosaic.start + seam_wrt_patch[0, :], patch_x_range_wrt_mosaic.start + seam_wrt_patch[1, :]]
                 seam_in_patch = patch[seam_wrt_patch[0, :], seam_wrt_patch[1, :]]
                 
@@ -207,11 +218,43 @@ class StitchingMethod(Enum):
                     patch[segments == (i + 1)] += T[i, :]
                 patch = np.clip(patch, 0, 255)
                 patch = np.uint8(patch)
-            
-            # finally, simply weight just the patch in the shared region
-            weights = [0.0, 1.0]
+
+        elif self == StitchingMethod.POISSON:
+            cx = (patch_x_range_wrt_mosaic.end + patch_x_range_wrt_mosaic.start)/2
+            cy = (patch_y_range_wrt_mosaic.end + patch_y_range_wrt_mosaic.start)/2
+            mosaic = cv.seamlessClone(patch, mosaic, patch_mask, (cx, cy), cv.NORMAL_CLONE)
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
-        
-        return weights, patch
+
+
+
+
+        # get the weights for the overlapping regions and eventually an updated patch
+
+
+
+        # stitch the warped patch according to the obtained seamed mask (this overwrites the shared regions)
+        ref__mosaic_in_patch = self.mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
+        ref__mosaic_in_patch[patch_mask, :] = patch[patch_mask, :]
+
+        # find the shared region in mosaic reference system
+        ref__mosaic_mask_in_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
+        # patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask_seam)  # mask of the shared region w.r.t. patch
+        # mosaic_mask_shared = np.zeros_like(self.mosaic_mask)  # mask of the shared region w.r.t. mosaic
+        # mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
+        #
+        # TODO this is broken, the shared mask in mosaic already has the new colors now
+        # # use shared mask to blend the colors in the shared region with the weights
+        # self.mosaic[mosaic_mask_shared, :] \
+        #     = weights[0] * self.mosaic[mosaic_mask_shared, :] \
+        #     + weights[1] * patch[patch_mask_shared, :]
+
+        # lastly, because matrix changes are by reference, update the total mask adding the patch mask
+        self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] \
+            = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
+
+
+
+
+        return mosaic

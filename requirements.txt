@@ -1,2 +1,3 @@
 opencv-python==4.5.4.58  # this is CPU only
 numpy~=1.21.4
+matplotlib

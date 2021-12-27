@@ -107,15 +107,14 @@ class ImageStitching(object):
     def __init__(self, folder: str = None,
                  homography_method=HomographyMethod.MANUAL_IMPL,
                  seam_method=SeamMethod.SIMPLE,
-                 stitching_method=StitchingMethod.AVERAGE, crossover_param=None,
+                 stitching_method=StitchingMethod.AVERAGE, stitching_param=None,
                  decimation_factor=0.1,
-                 make_rectangle=True,
-                 trim_borders=True):
+                 make_rectangle=True, trim_borders=True):
         # parameters
         self.homography_method = homography_method
         self.seam_method = seam_method
         self.stitching_method = stitching_method
-        self.crossover_param = crossover_param
+        self.stitching_param = stitching_param
         self.decimation_factor = np.clip(decimation_factor, 0, 1)
         self.make_rectangle = make_rectangle
         self.trim_borders = trim_borders
@@ -291,34 +290,16 @@ class ImageStitching(object):
             
             # calculate the seam using the given method
             patch_mask_seam, seam_wrt_patch = self.seam_method(
-                self.mosaic, self.mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
+                self.mosaic, self.mosaic_mask, patch, patch_mask,
+                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
             
             ####
             #   handle color blending
             ####
-            # get the weights for the overlapping regions and eventually an updated patch
-            weights, patch = self.stitching_method(
-                self.mosaic, patch, patch_mask_seam, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.crossover_param)
-            
-            # stitch the warped patch according to the obtained seamed mask (this overwrites the shared regions)
-            ref__mosaic_in_patch = self.mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
-            ref__mosaic_in_patch[patch_mask_seam, :] = patch[patch_mask_seam, :]
-            
-            # find the shared region in mosaic reference system
-            ref__mosaic_mask_in_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
-            # patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask_seam)  # mask of the shared region w.r.t. patch
-            # mosaic_mask_shared = np.zeros_like(self.mosaic_mask)  # mask of the shared region w.r.t. mosaic
-            # mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
-            #
-            # TODO this is broken, the shared mask in mosaic already has the new colors now
-            # # use shared mask to blend the colors in the shared region with the weights
-            # self.mosaic[mosaic_mask_shared, :] \
-            #     = weights[0] * self.mosaic[mosaic_mask_shared, :] \
-            #     + weights[1] * patch[patch_mask_shared, :]
-            
-            # lastly, because matrix changes are by reference, update the total mask adding the patch mask
-            self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask_seam)
-        
+            self.mosaic = self.stitching_method(
+                self.mosaic, patch, patch_mask_seam, seam_wrt_patch,
+                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.stitching_param)
+
         # final image still contains float values, so we convert it back
         self.mosaic = self.mosaic.astype(np.uint8)
 

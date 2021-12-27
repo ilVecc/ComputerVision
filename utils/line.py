@@ -15,8 +15,12 @@ def fit_line2D(points, idxs):
 
 
 def distance_line2D(points, line):
-    line_d = np.array([np.cos(line[0]), np.sin(line[0])])
-    return distance_points_to_line(points, line_d, line[1])
+    m = line[0]
+    q = line[1]
+    points = np.vstack([points, np.zeros(shape=(1, points.shape[1]))]).T
+    line_d = np.array([[np.cos(m), np.sin(m), 0]]).T
+    line_c = np.array([[0, q, 0]]).T
+    return distance_points_to_line(points, line_d, line_c)
 
 
 def distance_points_to_line(P, line_d, line_c):
