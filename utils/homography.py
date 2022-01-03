@@ -47,7 +47,7 @@ def distance_homography(pairs, H):
     # m1 = np.hstack([m1, np.ones(shape=(1, m1.shape[0]))])
     # m2 = np.hstack([m1, np.ones(shape=(1, m1.shape[0]))])
     m2_reproj = H @ m1
-    # TODO sometimes here we have a divide by zero error
+    # FIXME sometimes here we have a divide by zero error
     m2_reproj /= m2_reproj[2, :]
     dist = np.linalg.norm(m2 - m2_reproj, axis=0)
     return dist, m2_reproj

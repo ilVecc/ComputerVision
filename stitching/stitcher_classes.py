@@ -81,6 +81,7 @@ class SeamMethod(Enum):
         # find the shared region in patch reference system
         ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
         patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
+        patch_mask_non_shared = np.bitwise_xor(patch_mask, patch_mask_shared)  # mask of the non-shared region w.r.t. patch
         
         if self == SeamMethod.SIMPLE:
             # TODO broken
@@ -113,31 +114,28 @@ class SeamMethod(Enum):
                 # # draw the seam line
                 # ref__mosaic_in_bb[seam_line[0, :], seam_line[1, :]] = [255, 0, 0]
                 # ref__patch_in_bb[seam_line[0, :], seam_line[1, :]] = [255, 0, 0]
-                # import matplotlib.pyplot as pt
-                # pt.imshow(ref__mosaic_in_bb), pt.show()
-                # pt.imshow(ref__patch_in_bb), pt.show()
+                # import matplotlib.pyplot as pt; pt.imshow(ref__mosaic_in_bb), pt.show(); pt.imshow(ref__patch_in_bb), pt.show()
                 
                 ####
                 #   find best half to stitch
                 ####
                 
-                # fill the right half of the cut bb
-                seam_x_min = seam_line[1].min()
-                seam_x_max = seam_line[1].max()
-                seam_x_size = seam_x_max - seam_x_min
-                xv = np.repeat(np.arange(seam_x_size)[np.newaxis, :], repeats=theta.shape[0], axis=0)
-                y_mask = np.repeat(seam_line[1][:, np.newaxis] - seam_x_min, repeats=seam_x_size, axis=1)
-                mask_in_bb_right = xv >= y_mask
+                # fill the right half of the shared area
+                xv = np.repeat(np.arange(w)[np.newaxis, :], repeats=theta.shape[0], axis=0)
+                y_mask = np.repeat(seam_line[1][:, np.newaxis] - seam_line[1].min(), repeats=w, axis=1)
+                seam_mask_in_bb = xv >= y_mask
                 
                 # test side: if the shared region is shifted on the left, then use the mask (right-filling), otherwise use its inverse (left-filling)
-                seamed_patch_mask = patch_mask.copy()
-                mask_in_bb = mask_in_bb_right if x + w / 2 < patch_mask.shape[1] / 2 else np.bitwise_not(mask_in_bb_right)
-                y_range = slice(y, y + h)
-                x_range = slice(x + seam_x_min, x + seam_x_min + seam_x_size)
-                seamed_patch_mask[y_range, x_range] = mask_in_bb
+                is_right = x + w / 2 < patch_mask.shape[1] / 2
+                seam_mask_in_bb = seam_mask_in_bb if is_right else np.bitwise_not(seam_mask_in_bb)
                 
-                # final re-masking using the patch mask
-                seamed_patch_mask = np.bitwise_and(seamed_patch_mask, patch_mask)
+                # paste the seam mask onto the non-shared mask and re-mask with the original patch mask for safety
+                seamed_patch_mask = patch_mask_non_shared.copy()
+                ref__seamed_patch_mask_in_bb = seamed_patch_mask[y:y + h, x:x + w]
+                seamed_patch_mask[y:y + h, x:x + w] = np.bitwise_or(ref__seamed_patch_mask_in_bb, seam_mask_in_bb)
+                seamed_patch_mask = np.bitwise_and(seamed_patch_mask, patch_mask)  # just to be sure
+                
+                # add offset to the seam, in order to reference it w.r.t. patch
                 seam_wrt_patch = seam_line + np.array([[y, x]]).T
         
         else:
@@ -155,20 +153,37 @@ class StitchingMethod(Enum):
     SUPERPIXEL_BASED_ALT = auto()
     POISSON = auto()
     
-    def __call__(self, mosaic, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
+    def __call__(self, mosaic, mosaic_mask, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
+        
+        # get content of mosaic (and mosaic mask) in the patch region
+        ref__mosaic_in_patch = mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
+        ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
 
+        # find the shared region in patch reference system
+        patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
+        patch_mask_non_shared = np.bitwise_xor(patch_mask, patch_mask_shared)  # mask of the non-shared region w.r.t. patch
+        
+        # add by default new pixels, without touching the shared region
+        ref__mosaic_in_patch[patch_mask_non_shared, :] = patch[patch_mask_non_shared, :]
+
+        # stitch the warped patch in the shared region
         if self == StitchingMethod.DIRECT:
+            # simply use the patch content
             weights = [0.0, 1.0]
+            ref__mosaic_in_patch[patch_mask_shared] = weights[0] * ref__mosaic_in_patch[patch_mask_shared] + weights[1] * patch[patch_mask_shared]
         
         elif self == StitchingMethod.AVERAGE:
             weights = [0.5, 0.5]
+            ref__mosaic_in_patch[patch_mask_shared] = weights[0] * ref__mosaic_in_patch[patch_mask_shared] + weights[1] * patch[patch_mask_shared]
         
         elif self == StitchingMethod.WEIGHTED:
             weights = [t, 1 - t]
+            ref__mosaic_in_patch[patch_mask_shared] = weights[0] * ref__mosaic_in_patch[patch_mask_shared] + weights[1] * patch[patch_mask_shared]
         
         elif self == StitchingMethod.ALPHA_GRADIENT:
 
             # TODO broken
+            weights = [0.0, 1.0]
 
             if seam_wrt_patch.shape[1] != 0:
                 # fit line on the seam
@@ -195,11 +210,12 @@ class StitchingMethod(Enum):
                 kernel_size = t * np.cos(np.arctan(-1/m))
                 gradient_mask = cv.GaussianBlur(gradient_mask, (kernel_size, kernel_size), 0)
                 patch = patch * gradient_mask
+            
+            ref__mosaic_in_patch[patch_mask_shared] = weights[0] * ref__mosaic_in_patch[patch_mask_shared] + weights[1] * patch[patch_mask_shared]
         
         # https://ieeexplore.ieee.org/document/9115682/  or  https://ieeexplore.ieee.org/document/8676030
         elif self == StitchingMethod.SUPERPIXEL_BASED_ALT or self == StitchingMethod.SUPERPIXEL_BASED:
 
-            # simply weight just the patch in the shared region
             weights = [0.0, 1.0]
 
             # check first image
@@ -219,42 +235,22 @@ class StitchingMethod(Enum):
                 patch = np.clip(patch, 0, 255)
                 patch = np.uint8(patch)
 
+            ref__mosaic_in_patch[patch_mask_shared] = weights[0] * ref__mosaic_in_patch[patch_mask_shared] + weights[1] * patch[patch_mask_shared]
+
         elif self == StitchingMethod.POISSON:
-            cx = (patch_x_range_wrt_mosaic.end + patch_x_range_wrt_mosaic.start)/2
-            cy = (patch_y_range_wrt_mosaic.end + patch_y_range_wrt_mosaic.start)/2
-            mosaic = cv.seamlessClone(patch, mosaic, patch_mask, (cx, cy), cv.NORMAL_CLONE)
+            # We need a little lateral thinking here: after having added the non-shared pixels, we Poisson-blend the patch onto mosaic (using seamed mask);
+            # this way we blend the old pixels in the overlapping region (important) and the new pixels with the patch (useless, the content is already there).
+            # This workaround effectively blends just the overlapping region and allows us to use the  seamlessClone()  function, which requires positioning
+            # into an empty area of the mosaic, which would definitely ruin the result without these premises.
+            ref__mosaic_in_patch[patch_mask_shared] = patch[patch_mask_shared]
+            cx = (patch_x_range_wrt_mosaic.stop + patch_x_range_wrt_mosaic.start)/2
+            cy = (patch_y_range_wrt_mosaic.stop + patch_y_range_wrt_mosaic.start)/2
+            mosaic = cv.seamlessClone(patch, mosaic, np.uint8(patch_mask), (int(cx), int(cy)), cv.MIXED_CLONE)
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
-
-
-
-
-        # get the weights for the overlapping regions and eventually an updated patch
-
-
-
-        # stitch the warped patch according to the obtained seamed mask (this overwrites the shared regions)
-        ref__mosaic_in_patch = self.mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :]
-        ref__mosaic_in_patch[patch_mask, :] = patch[patch_mask, :]
-
-        # find the shared region in mosaic reference system
-        ref__mosaic_mask_in_patch = self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
-        # patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask_seam)  # mask of the shared region w.r.t. patch
-        # mosaic_mask_shared = np.zeros_like(self.mosaic_mask)  # mask of the shared region w.r.t. mosaic
-        # mosaic_mask_shared[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask_shared
-        #
-        # TODO this is broken, the shared mask in mosaic already has the new colors now
-        # # use shared mask to blend the colors in the shared region with the weights
-        # self.mosaic[mosaic_mask_shared, :] \
-        #     = weights[0] * self.mosaic[mosaic_mask_shared, :] \
-        #     + weights[1] * patch[patch_mask_shared, :]
-
+        
         # lastly, because matrix changes are by reference, update the total mask adding the patch mask
-        self.mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] \
-            = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
+        mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
 
-
-
-
-        return mosaic
+        return mosaic, mosaic_mask

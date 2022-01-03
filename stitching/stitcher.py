@@ -41,6 +41,7 @@ class ImagePatch(object):
         
         try:
             self.img = cv.imread(self.path)
+            # TODO think again this
             # self.img[:, :, 0] = cv.equalizeHist(self.img[:, :, 0])
             # self.img[:, :, 1] = cv.equalizeHist(self.img[:, :, 1])
             # self.img[:, :, 2] = cv.equalizeHist(self.img[:, :, 2])
@@ -259,8 +260,8 @@ class ImageStitching(object):
         
         # initialize empty image
         mosaic_size = (bb_mosaic_max - bb_mosaic_min + 1).astype(int)
-        self.mosaic = np.zeros(shape=(mosaic_size[1], mosaic_size[0], 3), dtype=int)
-        self.mosaic_mask = np.zeros(shape=(mosaic_size[1], mosaic_size[0])).astype(bool)
+        self.mosaic = np.zeros(shape=(mosaic_size[1], mosaic_size[0], 3), dtype=np.uint8)
+        self.mosaic_mask = np.zeros(shape=(mosaic_size[1], mosaic_size[0]), dtype=np.bool)
         
         for image_patch in self._images:
             
@@ -291,18 +292,20 @@ class ImageStitching(object):
             # calculate the seam using the given method
             patch_mask_seam, seam_wrt_patch = self.seam_method(
                 self.mosaic, self.mosaic_mask, patch, patch_mask,
-                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
+                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic
+            )
             
             ####
             #   handle color blending
             ####
-            self.mosaic = self.stitching_method(
-                self.mosaic, patch, patch_mask_seam, seam_wrt_patch,
-                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.stitching_param)
-
-        # final image still contains float values, so we convert it back
-        self.mosaic = self.mosaic.astype(np.uint8)
-
+            self.mosaic, self.mosaic_mask = self.stitching_method(
+                self.mosaic, self.mosaic_mask,
+                patch, patch_mask_seam,
+                seam_wrt_patch,
+                patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.stitching_param
+            )
+        
+        # cut the image if requested
         if self.make_rectangle:
             rect = biggest_rectangle_in_mask(self.mosaic_mask)
             range_y = slice(rect[0], rect[2] + 1)

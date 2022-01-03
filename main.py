@@ -5,17 +5,18 @@ import cv2.cv2 as cv
 
 if __name__ == '__main__':
     stitcher = ImageStitching(
-        homography_method=HomographyMethod.MANUAL_IMPL,
+        homography_method=HomographyMethod.CV_IMPL,
         seam_method=SeamMethod.ENERGY_BASED,
-        stitching_method=StitchingMethod.SUPERPIXEL_BASED,
+        stitching_method=StitchingMethod.POISSON,
         stitching_param=100,
         decimation_factor=0.75,
         make_rectangle=False,
         trim_borders=False
     )
-    # stitcher.process_folder("imgs/biennale/low_res")
+    stitcher.process_folder("imgs/biennale/low_res")
     # stitcher.process_folder("imgs/roofs")
-    stitcher.process_folder("imgs/library")
+    # stitcher.process_folder("imgs/river")
+    # stitcher.process_folder("imgs/library")
     stitcher.balance_warpings(use_central=False)
     # TODO
     #  Order the images using  H  so to avoid the case of a "double seam" necessity.
