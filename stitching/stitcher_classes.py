@@ -245,6 +245,7 @@ class StitchingMethod(Enum):
             ref__mosaic_in_patch[patch_mask_shared] = patch[patch_mask_shared]
             cx = (patch_x_range_wrt_mosaic.stop + patch_x_range_wrt_mosaic.start)/2
             cy = (patch_y_range_wrt_mosaic.stop + patch_y_range_wrt_mosaic.start)/2
+            # TODO mask just the contour! (seam + border)
             mosaic = cv.seamlessClone(patch, mosaic, np.uint8(patch_mask), (int(cx), int(cy)), cv.MIXED_CLONE)
         
         else:
