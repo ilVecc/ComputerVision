@@ -118,7 +118,7 @@ def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_
         # https://ieeexplore.ieee.org/document/8676030
         diff_color /= 255
         diff_coord = seam_coords_wrt_patch[:, :, np.newaxis] - segments_centroids_coords[:, np.newaxis, :]
-
+        
         # # cool distance visualization
         # patch_copy = patch.copy()
         # for i in range(657):
@@ -149,8 +149,53 @@ def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_
         # https://ieeexplore.ieee.org/document/9115682/
         sigma = 50
         w = np.exp(-0.5 * (np.linalg.norm(diff_color, ord=2, axis=2) / sigma) ** 2)
-        
+    
     return w, segments, n_segments
+
+
+def multi_channel_blending(mosaic_shared, patch_shared, patch_mask_shared):
+    def GaussianPyramid(img, leveln):
+        GP = [img]
+        for i in range(leveln - 1):
+            GP.append(cv.pyrDown(GP[i]))
+        return GP
+    
+    def LaplacianPyramid(img, leveln):
+        LP = []
+        for i in range(leveln - 1):
+            next_img = cv.pyrDown(img)
+            LP.append(img - cv.pyrUp(next_img, dstsize=img.shape[1::-1]))
+            img = next_img
+        LP.append(img)
+        return LP
+    
+    def blend_pyramid(LPA, LPB, MP):
+        blended = []
+        for i, M in enumerate(MP):
+            blended.append(LPA[i] * M + LPB[i] * (1.0 - M))
+        return blended
+    
+    def reconstruct(LS):
+        img = LS[-1]
+        for lev_img in LS[-2::-1]:
+            img = cv.pyrUp(img, dstsize=lev_img.shape[1::-1])
+            img += lev_img
+        img = np.clip(img, 0, 255)
+        return img
+    
+    # Get Gaussian pyramid and Laplacian pyramid
+    leveln = int(np.floor(np.log2(min(mosaic_shared.shape[0], patch_shared.shape[1]))))
+    MP = GaussianPyramid(patch_mask_shared, leveln)
+    LPA = LaplacianPyramid(mosaic_shared, leveln)
+    LPB = LaplacianPyramid(patch_shared, leveln)
+    
+    # Blend two Laplacian pyramidspass
+    blended_pyramids = blend_pyramid(LPA, LPB, MP)
+    
+    # Reconstruction process
+    blended_shared_region = reconstruct(blended_pyramids)
+    
+    return blended_shared_region
 
 
 # https://docs.opencv.org/3.4/d3/d05/tutorial_py_table_of_contents_contours.html
@@ -218,3 +263,36 @@ def biggest_rectangle_in_mask(mask):
         pidx += 1
     
     return ul_r, ul_c, br_r, br_c
+
+
+def cylindrical_warp(img, K):
+    """This function returns the cylindrical warp for a given image and intrinsics matrix K"""
+    h_, w_ = img.shape[:2]
+    
+    # pixel coordinates
+    y_i, x_i = np.indices((h_, w_))
+    X = np.stack([x_i, y_i, np.ones_like(x_i)], axis=-1).reshape(h_ * w_, 3)  # to homog
+    X = X @ np.linalg.inv(K).T  # normalized coords  [ (np.linalg.inv(K) @ X.T).T ]
+    
+    # calculate cylindrical coords (sin\theta, h, cos\theta)
+    A = np.stack([np.sin(X[:, 0]), X[:, 1], np.cos(X[:, 0])], axis=-1).reshape(w_ * h_, 3)
+    B = A @ K.T  # project back to image-pixels plane  [ (K @ A.T).T ]
+    B = B[:, :-1] / B[:, [-1]]  # back from homog coords
+    
+    # make sure warp coords only within image bounds
+    B[(B[:, 0] < 0) | (B[:, 0] >= w_) | (B[:, 1] < 0) | (B[:, 1] >= h_)] = -1
+    B = B.reshape(h_, w_, -1)
+
+    # warp the image according to cylindrical coords
+    img_rgba = cv.cvtColor(img, cv.COLOR_BGR2BGRA)  # for transparent borders...
+    img_rgba_warped = cv.remap(
+        img_rgba,
+        map1=B[:, :, 0].astype(np.float32),
+        map2=B[:, :, 1].astype(np.float32),
+        interpolation=cv.INTER_AREA,
+        borderMode=cv.BORDER_TRANSPARENT
+    )
+    return img_rgba_warped
+    
+    # img_warped = img_rgba_warped[:, :, 0:3]
+    # mask_warped = img_rgba_warped[:, :, 3] == 0

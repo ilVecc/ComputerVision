@@ -1,23 +1,26 @@
-from stitching.stitcher import ImageStitching, StitchingMethod, SeamMethod, HomographyMethod
 import cv2.cv2 as cv
+
+from stitching.stitcher import ImageStitching, StitchingMethod, SeamMethod, HomographyMethod, TrimmingMethod
 
 # TODO remove file info.md
 
 if __name__ == '__main__':
     stitcher = ImageStitching(
-        homography_method=HomographyMethod.CV_IMPL,
-        seam_method=SeamMethod.ENERGY_BASED,
-        stitching_method=StitchingMethod.POISSON,
+        homography_method=HomographyMethod.MANUAL_IMPL,
+        seam_method=SeamMethod.NONE,
+        stitching_method=StitchingMethod.AVERAGE,
         stitching_param=100,
-        decimation_factor=0.75,
-        make_rectangle=False,
-        trim_borders=False
+        trimming_method=TrimmingMethod.NONE,
+        decimation_factor=0
     )
-    stitcher.process_folder("imgs/biennale/low_res")
+    # stitcher.process_folder("imgs/biennale/low_res")
+    # stitcher.process_folder("imgs/colosseum/low_res")
+    stitcher.process_folder("imgs/stadium/low_res_1")
     # stitcher.process_folder("imgs/roofs")
     # stitcher.process_folder("imgs/river")
     # stitcher.process_folder("imgs/library")
-    stitcher.balance_warpings(use_central=False)
+    stitcher.balance_warpings(use_translation=True)
+    
     # TODO
     #  Order the images using  H  so to avoid the case of a "double seam" necessity.
     #  e.g. the mosaic could be

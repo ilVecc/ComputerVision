@@ -3,7 +3,7 @@ from enum import Enum, auto
 import numpy as np
 from cv2 import cv2 as cv
 
-from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb, fast_color_blending
+from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb, fast_color_blending, biggest_rectangle_in_mask, multi_channel_blending
 from utils.homography import fit_homography, distance_homography
 from utils.line import fit_line2D, distance_line2D
 from utils.ransac import ransac
@@ -18,7 +18,7 @@ class HomographyMethod(Enum):
     def __call__(self, pairs):
         if self == HomographyMethod.MANUAL_IMPL:
             best_H, curr_iter, max_iter = None, 0, 10
-            k, th = 2000, 3
+            k, th = 1000, 3
             while best_H is None or curr_iter < max_iter:
                 # samples = 4  because it's the minimum required to estimate an homography
                 # providing more samples to RANSAC will most definitely result in problematic H outputs and glitches
@@ -73,7 +73,7 @@ class HomographyMethod(Enum):
 
 
 class SeamMethod(Enum):
-    SIMPLE = auto()
+    NONE = auto()
     ENERGY_BASED = auto()
     
     def __call__(self, mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic):
@@ -83,7 +83,7 @@ class SeamMethod(Enum):
         patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
         patch_mask_non_shared = np.bitwise_xor(patch_mask, patch_mask_shared)  # mask of the non-shared region w.r.t. patch
         
-        if self == SeamMethod.SIMPLE:
+        if self == SeamMethod.NONE:
             # TODO broken
             # the seam is a simple vertical line
             seamed_patch_mask = patch_mask
@@ -98,7 +98,7 @@ class SeamMethod(Enum):
             # if x is None then this is the first image and thus cannot have overlapping regions
             if x is None:
                 # this is the first image
-                seamed_patch_mask, seam_wrt_patch = SeamMethod.SIMPLE.__call__(mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
+                seamed_patch_mask, seam_wrt_patch = SeamMethod.NONE.__call__(mosaic, mosaic_mask, patch, patch_mask, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic)
             else:
                 mask_shared_in_bb = patch_mask_shared[y:y + h, x:x + w].copy()
                 ref__patch_in_bb = patch[y:y + h, x:x + w]
@@ -152,6 +152,7 @@ class StitchingMethod(Enum):
     SUPERPIXEL_BASED = auto()
     SUPERPIXEL_BASED_ALT = auto()
     POISSON = auto()
+    MULTI_CHANNEL_BLENDING = auto()
     
     def __call__(self, mosaic, mosaic_mask, patch, patch_mask, seam_wrt_patch, patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, t=0.5):
         
@@ -248,6 +249,10 @@ class StitchingMethod(Enum):
             # TODO mask just the contour! (seam + border)
             mosaic = cv.seamlessClone(patch, mosaic, np.uint8(patch_mask), (int(cx), int(cy)), cv.MIXED_CLONE)
         
+        elif self == StitchingMethod.MULTI_CHANNEL_BLENDING:
+            # TODO implement me
+            shared_region = multi_channel_blending(ref__mosaic_in_patch, patch, patch_mask_shared)
+        
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
         
@@ -255,3 +260,34 @@ class StitchingMethod(Enum):
         mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
 
         return mosaic, mosaic_mask
+
+
+class TrimmingMethod(Enum):
+    NONE = auto()
+    TRIM = auto()
+    TRIM_KEEP_BORDERS = auto()
+    
+    def __call__(self, image, mask):
+        
+        if self == TrimmingMethod.NONE:
+            return image, mask
+        
+        # find the trimming area
+        rect = biggest_rectangle_in_mask(mask)
+        range_y = slice(rect[0], rect[2] + 1)
+        range_x = slice(rect[1], rect[3] + 1)
+        
+        if self == TrimmingMethod.TRIM_KEEP_BORDERS:
+            trimmed_mask = np.zeros_like(mask).astype(dtype=bool)
+            trimmed_mask[range_y, range_x] = True
+            trimmed_image = image.copy()
+            trimmed_image[np.bitwise_not(trimmed_mask), :] = [0, 0, 0]
+            
+        elif self == TrimmingMethod.TRIM:
+            trimmed_image = image[range_y, range_x, :]
+            trimmed_mask = mask[range_y, range_x]
+            
+        else:
+            raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
+
+        return trimmed_image, trimmed_mask
