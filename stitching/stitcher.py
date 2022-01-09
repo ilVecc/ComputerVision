@@ -3,8 +3,8 @@ from pathlib import Path
 from cv2 import cv2 as cv
 import numpy as np
 
-from stitching.stitcher_classes import HomographyMethod, SeamMethod, StitchingMethod, TrimmingMethod
-from utils.algorithms import cylindrical_warp
+from .stitcher_settings import WarpingMethod, SeamMethod, StitchingMethod, TrimmingMethod
+from utils.algorithms import cylindrical_warp, histeq_color
 from utils.homography import apply_homogeneous
 
 
@@ -12,7 +12,7 @@ class ImagePatch(object):
     
     _sift = cv.SIFT_create()
     
-    def __init__(self, path, load=False):
+    def __init__(self, path, load=False, do_cylindrical_warp=False):
         self.path = path
         # loading
         self.is_loaded = False
@@ -36,9 +36,9 @@ class ImagePatch(object):
         self.warped_bb_center = None  # [x, y], w.r.t. H reference frame
         
         if load:
-            self.load_and_sift()
+            self.load_and_sift(do_cylindrical_warp)
     
-    def load_and_sift(self):
+    def load_and_sift(self, do_cylindrical_warp=False):
         if self.is_loaded:
             print(f"Image {self.path} has been already loaded")
             return
@@ -46,24 +46,23 @@ class ImagePatch(object):
         try:
             self.img = cv.imread(self.path)
             self.mask = np.ones(shape=self.img.shape[0:2], dtype=bool)
-            # TODO think again this
-            # self.img[:, :, 0] = cv.equalizeHist(self.img[:, :, 0])
-            # self.img[:, :, 1] = cv.equalizeHist(self.img[:, :, 1])
-            # self.img[:, :, 2] = cv.equalizeHist(self.img[:, :, 2])
+            # TODO this is not good for exposure correction
+            # self.img = histeq_color(self.img)
+
         except Exception as ex:
             print(f"Failed to load image {self.path} due to exception:")
             print(ex)
 
-        K = np.eye(3)
-        K[0, 0] = 3215
-        K[1, 1] = 3256
-        K[0, 2] = 2175 // 2
-        K[1, 2] = 1725 // 2
-        K[0, 1] = 10
-        
-        img_rgba = cylindrical_warp(self.img, K)
-        self.img = img_rgba[:, :, 0:3]
-        self.mask = img_rgba[:, :, 3] != 0
+        if do_cylindrical_warp:
+            K = np.eye(3)
+            K[0, 0] = 3215
+            K[1, 1] = 3256
+            K[0, 2] = 2175 // 2
+            K[1, 2] = 1725 // 2
+            K[0, 1] = 10
+            img_rgba = cylindrical_warp(self.img, K)
+            self.img = img_rgba[:, :, 0:3]
+            self.mask = img_rgba[:, :, 3] != 0
 
         self.is_loaded = True
         self._gray = cv.cvtColor(self.img, cv.COLOR_BGR2GRAY)
@@ -150,13 +149,14 @@ class ImagePatch(object):
 class ImageStitching(object):
     
     def __init__(self, folder: str = None,
-                 homography_method=HomographyMethod.MANUAL_IMPL,
+                 warping_method=WarpingMethod.MANUAL_IMPL,
                  seam_method=SeamMethod.NONE,
                  stitching_method=StitchingMethod.AVERAGE, stitching_param=None,
                  trimming_method=TrimmingMethod.NONE,
-                 decimation_factor=0.1):
+                 decimation_factor=0.1,
+                 debug=False):
         # parameters
-        self.homography_method = homography_method
+        self.warping_method = warping_method
         self.seam_method = seam_method
         self.stitching_method = stitching_method
         self.stitching_param = stitching_param
@@ -177,6 +177,8 @@ class ImageStitching(object):
         
         self.mosaic = None
         self.mosaic_mask = None
+
+        self.print_debug = debug
         
         if folder is not None:
             self.process_folder(folder)
@@ -226,6 +228,9 @@ class ImageStitching(object):
             self.process_next()
 
     def process_next(self):
+        if self.print_debug:
+            print(f"Processing image {self._i + 1} ... ", end="")
+
         ###
         #  1) get SIFT keypoints and descriptors
         ###
@@ -233,7 +238,7 @@ class ImageStitching(object):
         self._i += 1
         image_patch.load_and_sift()
         # cv.imshow("keypoints", cv.resize(cv.drawKeypoints(image_patch._gray, image_patch.keypoints, image_patch.img), (1366, 768))); cv.waitKey(0)
-        
+
         ###
         #  2) estimate homography
         ###
@@ -256,7 +261,7 @@ class ImageStitching(object):
             ###
             #  2.3) actually estimate homography using lines from matches
             ###
-            H_img_to_mosaic = self.homography_method(pairs)
+            H_img_to_mosaic = self.warping_method(pairs)
             if H_img_to_mosaic is None:
                 print(f"Something went very bad with the homography estimation... removing this patch from list")
                 self._images.pop(self._i - 1)
@@ -272,6 +277,9 @@ class ImageStitching(object):
         #  4) add keypoints and descriptors to training set
         ###
         self._update_training_set(image_patch)
+
+        if self.print_debug:
+            print(f"done")
     
     def _update_training_set(self, image_patch):
         self._train_kp = np.append(self._train_kp, image_patch.keypoints)
@@ -298,13 +306,16 @@ class ImageStitching(object):
         
         # stitch each image one by one
         for image_patch in self._images:
+
+            if self.print_debug:
+                print(f"Stitching image ... ", end="")
             
             ####
             #   warp the patch accordingly to the homography method used
             ####
             
             # image color and mask info
-            image_patch.apply_warping(self.homography_method)
+            image_patch.apply_warping(self.warping_method)
             
             ####
             #   create patch to stitch onto mosaic
@@ -332,6 +343,9 @@ class ImageStitching(object):
                 seam_wrt_patch,
                 patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.stitching_param
             )
+
+            if self.print_debug:
+                print(f"done")
 
         # cut the image
         self.mosaic, self.mosaic_mask = self.trimming_method(self.mosaic, self.mosaic_mask)
@@ -377,3 +391,8 @@ class ImageStitching(object):
             image_patch.preprocess_warping()
         
         return H_avg
+
+    def save(self, path):
+        # add mask to alpha layer
+        mosaic = np.dstack([self.mosaic, self.mosaic_mask * 255])
+        cv.imwrite("mosaic.png", mosaic)

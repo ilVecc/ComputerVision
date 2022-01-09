@@ -1,26 +1,26 @@
-import cv2.cv2 as cv
-
-from stitching.stitcher import ImageStitching, StitchingMethod, SeamMethod, HomographyMethod, TrimmingMethod
+from stitching import *
 
 # TODO remove file info.md
 
 if __name__ == '__main__':
     stitcher = ImageStitching(
-        homography_method=HomographyMethod.MANUAL_IMPL,
-        seam_method=SeamMethod.NONE,
-        stitching_method=StitchingMethod.AVERAGE,
+        warping_method=WarpingMethod.MANUAL_IMPL,
+        seam_method=SeamMethod.ENERGY_BASED,
+        stitching_method=StitchingMethod.ALPHA_GRADIENT,
         stitching_param=100,
         trimming_method=TrimmingMethod.NONE,
-        decimation_factor=0
+        decimation_factor=0,
+        debug=True
     )
-    # stitcher.process_folder("imgs/biennale/low_res")
-    # stitcher.process_folder("imgs/colosseum/low_res")
-    stitcher.process_folder("imgs/stadium/low_res_1")
     # stitcher.process_folder("imgs/roofs")
     # stitcher.process_folder("imgs/river")
     # stitcher.process_folder("imgs/library")
+    # stitcher.process_folder("imgs/biennale/low_res")
+    stitcher.process_folder("imgs/colosseum/low_res")
+    # stitcher.process_folder("imgs/stadium/low_res_1")
+
     stitcher.balance_warpings(use_translation=True)
-    
+
     # TODO
     #  Order the images using  H  so to avoid the case of a "double seam" necessity.
     #  e.g. the mosaic could be
@@ -32,7 +32,4 @@ if __name__ == '__main__':
     #        would need one seam line for  ##  and one for  $$
     #  A simple order of the  t  component in  H  using left-to-right, top-to-bottom order would be enough
     stitcher.stitch_all()
-    
-    cv.imshow("mosaic", cv.resize(stitcher.mosaic, (1366, 768)))
-    cv.waitKey(0)
-    cv.destroyAllWindows()
+    stitcher.save("mosaic.png")
