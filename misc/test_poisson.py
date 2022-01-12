@@ -3,8 +3,8 @@ import cv2.cv2 as cv2
 import numpy as np
 
 # Read images
-src = cv2.imread("imgs/airplane.jpg")
-dst = cv2.imread("imgs/sky.jpg")
+src = cv2.imread("imgs/test_poisson/airplane.jpg")
+dst = cv2.imread("imgs/test_poisson/sky.jpg")
 
 src = cv2.resize(src, (300, 194))
 dst = cv2.resize(dst, (1000, 560))

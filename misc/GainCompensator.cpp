@@ -1,3 +1,46 @@
+
+void GainCompensator::apply(int index, Point /*corner*/, InputOutputArray image, InputArray /*mask*/)
+{
+    CV_INSTRUMENT_REGION();
+
+    multiply(image, gains_(index, 0), image);
+}
+
+
+void GainCompensator::feed(const std::vector<Point> &corners, const std::vector<UMat> &images,
+                           const std::vector<std::pair<UMat,uchar> > &masks)
+{
+    LOGLN("Exposure compensation...");
+#if ENABLE_LOG
+    int64 t = getTickCount();
+#endif
+
+    const int num_images = static_cast<int>(images.size());
+    Mat accumulated_gains;
+    prepareSimilarityMask(corners, images);
+
+    for (int n = 0; n < nr_feeds_; ++n)
+    {
+        if (n > 0)
+        {
+            // Apply previous iteration gains
+            for (int i = 0; i < num_images; ++i)
+                apply(i, corners[i], images[i], masks[i].first);
+        }
+
+        singleFeed(corners, images, masks);
+
+        if (n == 0)
+            accumulated_gains = gains_.clone();
+        else
+            multiply(accumulated_gains, gains_, accumulated_gains);
+    }
+    gains_ = accumulated_gains;
+
+    LOGLN("Exposure compensation, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+}
+
+
 void GainCompensator::singleFeed(const std::vector<Point> &corners, const std::vector<UMat> &images,
                                  const std::vector<std::pair<UMat,uchar> > &masks)
 {
@@ -160,4 +203,88 @@ void GainCompensator::singleFeed(const std::vector<Point> &corners, const std::v
                 gains_.at<double>(i, 0) = l_gains(j++, 0);
         }
     }
+}
+
+
+void GainCompensator::prepareSimilarityMask(
+    const std::vector<Point> &corners, const std::vector<UMat> &images)
+{
+    if (similarity_threshold_ >= 1)
+    {
+        LOGLN("  skipping similarity mask: disabled");
+        return;
+    }
+    if (!similarities_.empty())
+    {
+        LOGLN("  skipping similarity mask: already set");
+        return;
+    }
+
+    LOGLN("  calculating similarity mask");
+    const int num_images = static_cast<int>(images.size());
+    for (int i = 0; i < num_images; ++i)
+    {
+        for (int j = i; j < num_images; ++j)
+        {
+            Rect roi;
+            if (overlapRoi(corners[i], corners[j], images[i].size(), images[j].size(), roi))
+            {
+                UMat subimg1 = images[i](Rect(roi.tl() - corners[i], roi.br() - corners[i]));
+                UMat subimg2 = images[j](Rect(roi.tl() - corners[j], roi.br() - corners[j]));
+                UMat similarity = buildSimilarityMask(subimg1, subimg2);
+                similarities_.push_back(similarity);
+            }
+        }
+    }
+}
+
+
+UMat GainCompensator::buildSimilarityMask(InputArray src_array1, InputArray src_array2)
+{
+    CV_Assert(src_array1.rows() == src_array2.rows() && src_array1.cols() == src_array2.cols());
+    CV_Assert(src_array1.type() == src_array2.type());
+    CV_Assert(src_array1.type() == CV_8UC3 || src_array1.type() == CV_8UC1);
+
+    Mat src1 = src_array1.getMat();
+    Mat src2 = src_array2.getMat();
+
+    UMat umat_similarity(src1.rows, src1.cols, CV_8UC1);
+    Mat similarity = umat_similarity.getMat(ACCESS_WRITE);
+
+    if (src1.channels() == 3)
+    {
+        for (int y = 0; y < similarity.rows; ++y)
+        {
+            for (int x = 0; x < similarity.cols; ++x)
+            {
+                Vec<float, 3> vec_diff =
+                    Vec<float, 3>(*src1.ptr<Vec<uchar, 3>>(y, x))
+                    - Vec<float, 3>(*src2.ptr<Vec<uchar, 3>>(y, x));
+                double diff = norm(vec_diff * (1.f / 255.f));
+
+                *similarity.ptr<uchar>(y, x) = diff <= similarity_threshold_ ? 255 : 0;
+            }
+        }
+    }
+    else // if (src1.channels() == 1)
+    {
+        for (int y = 0; y < similarity.rows; ++y)
+        {
+            for (int x = 0; x < similarity.cols; ++x)
+            {
+                float diff = std::abs(static_cast<int>(*src1.ptr<uchar>(y, x))
+                    - static_cast<int>(*src2.ptr<uchar>(y, x))) / 255.f;
+
+                *similarity.ptr<uchar>(y, x) = diff <= similarity_threshold_ ? 255 : 0;
+            }
+        }
+    }
+    similarity.release();
+
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(3,3));
+    UMat umat_erode;
+    erode(umat_similarity, umat_erode, kernel);
+    dilate(umat_erode, umat_similarity, kernel);
+
+    return umat_similarity;
 }

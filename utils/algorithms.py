@@ -153,7 +153,7 @@ def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_
     return w, segments, n_segments
 
 
-def multi_channel_blending(img1, img2, mask):
+def multi_channel_blending(img1, img2, mask1, mask2):
     def GaussianPyramid(img, leveln):
         GP = [img]
         for i in range(leveln - 1):
@@ -169,10 +169,10 @@ def multi_channel_blending(img1, img2, mask):
         LP.append(img)
         return LP
 
-    def blend_pyramid(LPA, LPB, MP):
+    def blend_pyramid(LPA, LPB, MPA, MPB):
         blended = []
-        for LA, LB, M in zip(LPA, LPB, MP):
-            blended.append(LA * M + LB * (1.0 - M))
+        for LA, LB, MA, MB in zip(LPA, LPB, MPA, MPB):
+            blended.append(LA * MA + LB * MB)
         return blended
 
     def reconstruct(LS):
@@ -186,19 +186,23 @@ def multi_channel_blending(img1, img2, mask):
     # Get Gaussian pyramid and Laplacian pyramid
     leveln = int(np.floor(np.log2(min(img1.shape[0], img2.shape[1]))))
 
-    mask = mask.astype(np.float64)  # [0, 1]
+    mask = np.bitwise_or(mask1, mask2)
     img1 = img1.astype(np.float64)  # [0, 255]
     img2 = img2.astype(np.float64)  # [0, 255]
-    MP = GaussianPyramid(mask, leveln)
-    LPA = LaplacianPyramid(img1, leveln)
-    LPB = LaplacianPyramid(img2, leveln)
+    mask1 = mask1.astype(np.float64)  # [0, 1]
+    mask2 = mask2.astype(np.float64)  # [0, 1]
+    LP1 = LaplacianPyramid(img1, leveln)
+    LP2 = LaplacianPyramid(img2, leveln)
+    MP1 = GaussianPyramid(mask1, leveln)
+    MP2 = GaussianPyramid(mask2, leveln)
 
     # Blend two Laplacian pyramids
-    blended_pyramids = blend_pyramid(LPA, LPB, MP)
+    blended_pyramids = blend_pyramid(LP1, LP2, MP1, MP2)
 
     # Reconstruction process
     blended_img = reconstruct(blended_pyramids)
     blended_img = np.uint8(blended_img)
+    blended_img = blended_img * mask
 
     return blended_img
 
@@ -219,12 +223,14 @@ def show_blobs(img):
     cv.waitKey(0)
 
 
-def biggest_shared_region_bb(img):
-    img = img.astype(np.uint8) * 255
-    contours, hierarchy = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+def biggest_bb_in_mask(img):
+    img = np.uint8(img) * 255
+    contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    if len(contours) == 0:
+        return None, None, None, None
     # find biggest contour
     areas = [cv.contourArea(c) for c in contours]
-    return cv.boundingRect(contours[np.argmax(areas)]) if areas else (None, None, None, None)
+    return cv.boundingRect(contours[np.argmax(areas)])
 
 
 # https://stackoverflow.com/a/30136404/7742892
@@ -310,3 +316,215 @@ def histeq_color(img):
     cv.merge(channels, dst=ycrcb)
     cv.cvtColor(ycrcb, cv.COLOR_YCR_CB2BGR, dst=img)
     return img
+
+
+def gain_intensity(img, gain):
+    ycrcb = cv.cvtColor(img, cv.COLOR_BGR2YCR_CB)
+    channels = cv.split(ycrcb)
+    y = np.float64(channels[0]) * gain  # equalize intensity channel
+    y = np.clip(y, 0, 255)
+    y = np.uint8(np.round(y))
+    channels = (y, channels[1], channels[2])
+    cv.merge(channels, dst=ycrcb)
+    cv.cvtColor(ycrcb, cv.COLOR_YCR_CB2BGR, dst=img)
+    return img
+
+
+def overlap_mask(origin1, origin2, mask1, mask2):
+    y_min = min(origin1[1], origin2[1])
+    y_max = max(origin1[1] + mask1.shape[0], origin2[1] + mask2.shape[0])
+    x_min = min(origin1[0], origin2[0])
+    x_max = max(origin1[0] + mask1.shape[1], origin2[0] + mask2.shape[1])
+    mask = np.zeros(shape=(y_max - y_min, x_max - x_min), dtype=bool)
+    mask[
+        origin1[1] - y_min: origin1[1] - y_min + mask1.shape[0],
+        origin1[0] - x_min: origin1[0] - x_min + mask1.shape[1]
+    ] = mask1
+    ref__mask_in_mask2_region = mask[
+        origin2[1] - y_min: origin2[1] - y_min + mask2.shape[0],
+        origin2[0] - x_min: origin2[0] - x_min + mask2.shape[1]
+    ]
+    overlap_wrt_mask2 = np.bitwise_and(ref__mask_in_mask2_region, mask2)
+    x, y, w, h = biggest_bb_in_mask(overlap_wrt_mask2)
+    if x is None:
+        return (None, None), np.empty(shape=(), dtype=bool)
+    overlap = overlap_wrt_mask2[y:y + h, x:x + w]
+    return (x + origin2[0], y + origin2[1]), overlap
+
+
+class GainCompensator(object):
+    
+    def __init__(self):
+        self.similarity_thresh = 1
+        self._similarities = []
+        self._gains = np.empty(shape=())
+        self.update_gain = True
+        self._nr_feeds = 1
+    
+    def can_update_gain(self):
+        return self.update_gain
+    
+    def apply(self, index, corner, image, mask):
+        return image * self._gains[index]
+    
+    # noinspection PyUnboundLocalVariable
+    def feed(self, corners, images, masks):
+        num_images = len(images)
+        self.prepare_similarity_mask(corners, images)
+        
+        for n in range(self._nr_feeds):
+            if n > 0:
+                # Apply previous iteration gains
+                for i in range(num_images):
+                    images[i] = self.apply(i, corners[i], images[i], masks[i])
+            
+            self.single_feed(corners, images, masks)
+            
+            if n == 0:
+                accumulated_gains = self._gains.copy()
+            else:
+                accumulated_gains = accumulated_gains * self._gains
+        self._gains = accumulated_gains
+        return self._gains
+    
+    def single_feed(self, origins, images, masks):
+        
+        assert len(origins) == len(images) and len(images) == len(masks)
+        
+        if len(images) == 0:
+            return
+        
+        num_channels = 1 if len(images[0].shape) < 2 else images[0].shape[2]
+        assert all([(1 if len(images[0].shape) < 2 else images[0].shape[2]) == num_channels for image in images])
+        if num_channels == 1:
+            images = [image[..., np.newaxis] for image in images]
+        assert num_channels == 1 or num_channels == 3
+        
+        num_images = len(images)
+        N = np.zeros(shape=(num_images, num_images), dtype=np.int32)
+        I = np.zeros(shape=(num_images, num_images))
+        skip = np.ones(shape=(num_images,), dtype=bool)
+        
+        similarity_it = 0
+        for i in range(num_images):
+            for j in range(i, num_images):
+                overlap_origin, overlap = overlap_mask(origins[i], origins[j], masks[i], masks[j])
+                if overlap_origin[0] is not None:
+                    subimg1 = images[i][
+                              overlap_origin[1] - origins[i][1]: overlap_origin[1] - origins[i][1] + overlap.shape[0],
+                              overlap_origin[0] - origins[i][0]: overlap_origin[0] - origins[i][0] + overlap.shape[1]]
+                    subimg2 = images[j][
+                              overlap_origin[1] - origins[j][1]: overlap_origin[1] - origins[j][1] + overlap.shape[0],
+                              overlap_origin[0] - origins[j][0]: overlap_origin[0] - origins[j][0] + overlap.shape[1]]
+                    submask1 = masks[i][
+                               overlap_origin[1] - origins[i][1]: overlap_origin[1] - origins[i][1] + overlap.shape[0],
+                               overlap_origin[0] - origins[i][0]: overlap_origin[0] - origins[i][0] + overlap.shape[1]]
+                    submask2 = masks[j][
+                               overlap_origin[1] - origins[j][1]: overlap_origin[1] - origins[j][1] + overlap.shape[0],
+                               overlap_origin[0] - origins[j][0]: overlap_origin[0] - origins[j][0] + overlap.shape[1]]
+                    intersect = np.bitwise_and(submask1, submask2)
+                    
+                    # if similarities have been set, use them
+                    if len(self._similarities) > 1:
+                        assert similarity_it < len(self._similarities)
+                        intersect = np.bitwise_and(intersect, self._similarities[similarity_it])
+                        similarity_it += 1
+                    
+                    intersect_count = np.count_nonzero(intersect)
+                    N[i, j] = N[j, i] = max(1, intersect_count)
+                    
+                    # Don't compute Isums if subimages do not intersect anyway
+                    if intersect_count == 0:
+                        continue
+                    
+                    # Don't skip images that intersect with at least one other image
+                    if i != j:
+                        skip[i] = False
+                        skip[j] = False
+                    
+                    I[i, j] = np.sum(np.linalg.norm(subimg1, axis=2) * intersect) / N[i, j]
+                    I[j, i] = np.sum(np.linalg.norm(subimg2, axis=2) * intersect) / N[i, j]
+        
+        if self.can_update_gain() or len(self._gains) != num_images:
+            alpha = 0.01
+            beta = 100.0
+            num_eq = num_images - np.count_nonzero(skip)
+            self._gains = np.ones(shape=(num_images,))
+            
+            # No image process, gains are all set to one, stop here
+            if num_eq == 0:
+                return
+            
+            A = np.zeros(shape=(num_eq, num_eq))
+            b = np.zeros(shape=(num_eq,))
+            ki = 0
+            for i in range(num_images):
+                if skip[i]:
+                    continue
+                
+                kj = 0
+                for j in range(num_images):
+                    if skip[j]:
+                        continue
+                    
+                    b[ki] += beta * N[i, j]
+                    A[ki, ki] += beta * N[i, j]
+                    if j != i:
+                        A[ki, ki] += 2 * alpha * I[i, j] * I[i, j] * N[i, j]
+                        A[ki, kj] -= 2 * alpha * I[i, j] * I[j, i] * N[i, j]
+                    kj += 1
+                ki += 1
+            
+            l_gains = np.linalg.solve(A, b)
+            
+            j = 0
+            for i in range(num_images):
+                # Only assign non-skipped gains. Other gains are already set to 1
+                if not skip[i]:
+                    self._gains[i] = l_gains[j]
+                    j += 1
+        return self._gains
+    
+    def prepare_similarity_mask(self, origins, images):
+        
+        if self.similarity_thresh >= 1:
+            print("  skipping similarity mask: disabled")
+            return
+        
+        if len(self._similarities) != 0:
+            print("  skipping similarity mask: already set")
+            return
+        
+        print("  calculating similarity mask")
+        num_images = len(images)
+        for i in range(num_images):
+            for j in range(i, num_images):
+                overlap_origin, overlap = overlap_mask(origins[i], origins[j], images[i].size(), images[j].size())
+                if overlap_origin[0] is not None:
+                    subimg1 = images[i][
+                              overlap_origin[1] - origins[i][1]: overlap_origin[1] - origins[i][1] + overlap.shape[0],
+                              overlap_origin[0] - origins[i][0]: overlap_origin[0] - origins[i][0] + overlap.shape[1]]
+                    subimg2 = images[j][
+                              overlap_origin[1] - origins[j][1]: overlap_origin[1] - origins[j][1] + overlap.shape[0],
+                              overlap_origin[0] - origins[j][0]: overlap_origin[0] - origins[j][0] + overlap.shape[1]]
+                    similarity = self.build_similarity_mask(subimg1, subimg2)
+                    self._similarities.append([self._similarities, similarity])
+    
+    def build_similarity_mask(self, src1, src2):
+        
+        assert src1.shape[0] == src2.shape[0] and src1.shape[1] == src2.shape[1]
+        assert src1.dtype == src2.dtype == np.uint8
+        assert len(src1.shape) < 3 or src1.shape[2] == 1 or src1.shape[2] == 3
+        
+        # similarity = np.zeros(shape=(src1.rows, src1.cols), dtype=cv.CV_8UC1)
+        # if src1.channels() == 3:
+        #     for y in range(similarity.shape[0]):
+        #         for x in range(similarity.shape[1]):
+        #             diff = np.linalg.norm((src1[y, x, :] - src2[y, x, :]) / 255.0)
+        #             similarity[y, x] = 255 if diff <= similarity_threshold_ else 0
+        
+        similarity = (np.linalg.norm((src1 - src2) / 255.0, axis=2) <= self.similarity_thresh) * 255
+        kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
+        similarity = cv.erode(similarity, kernel)
+        similarity = cv.dilate(similarity, kernel)
+        return similarity

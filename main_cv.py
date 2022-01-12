@@ -2,7 +2,7 @@ import cv2.cv2 as cv
 from pathlib import Path
 
 
-folder = "imgs/library"
+folder = "imgs/colosseum/low_res"
 imgs = []
 
 for img_path in Path(folder).iterdir():

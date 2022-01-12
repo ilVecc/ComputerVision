@@ -3,7 +3,7 @@ from enum import Enum, auto
 import numpy as np
 from cv2 import cv2 as cv
 
-from utils.algorithms import energy_based_seam_line, biggest_shared_region_bb, fast_color_blending, biggest_rectangle_in_mask, multi_channel_blending
+from utils.algorithms import energy_based_seam_line, biggest_bb_in_mask, fast_color_blending, biggest_rectangle_in_mask, multi_channel_blending, GainCompensator
 from utils.homography import fit_homography, distance_homography
 from utils.line import fit_line2D, distance_line2D
 from utils.ransac import ransac
@@ -94,7 +94,7 @@ class SeamMethod(Enum):
         elif self == SeamMethod.ENERGY_BASED:
             
             # trace the shared region bounding box and use it as input for the algorithm
-            x, y, w, h = biggest_shared_region_bb(patch_mask_shared)
+            x, y, w, h = biggest_bb_in_mask(patch_mask_shared)
             # if x is None then this is the first image and thus cannot have overlapping regions
             if x is None:
                 # this is the first image
@@ -144,6 +144,24 @@ class SeamMethod(Enum):
         return seamed_patch_mask, seam_wrt_patch  # pixels are [y; x]
 
 
+class ExposureCompensationMethod(Enum):
+    GAIN = auto()
+    
+    def __call__(self, patches):
+        
+        if self == ExposureCompensationMethod.GAIN:
+            gc = GainCompensator()
+            origins = [p.warped_bb_origin for p in patches]
+            images = [p.warped_img for p in patches]
+            masks = [p.warped_mask for p in patches]
+            gains = gc.feed(origins, images, masks)
+            
+        else:
+            raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
+        
+        return gains
+
+
 class StitchingMethod(Enum):
     DIRECT = auto()
     AVERAGE = auto()
@@ -163,6 +181,10 @@ class StitchingMethod(Enum):
         # find the shared region in patch reference system
         patch_mask_shared = np.bitwise_and(ref__mosaic_mask_in_patch, patch_mask)  # mask of the shared region w.r.t. patch
         patch_mask_non_shared = np.bitwise_xor(patch_mask, patch_mask_shared)  # mask of the non-shared region w.r.t. patch
+
+        # lastly, because matrix changes are by reference, update the total mask adding the patch mask
+        mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
+        ref__mosaic_mask_in_patch = mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic]
         
         # add by default new pixels, without touching the shared region
         ref__mosaic_in_patch[patch_mask_non_shared, :] = patch[patch_mask_non_shared, :]
@@ -183,7 +205,6 @@ class StitchingMethod(Enum):
         
         elif self == StitchingMethod.ALPHA_GRADIENT:
 
-            weights = [0.0, 1.0]
             kernel_size = int(2*np.floor(param/2)+1)
             gradient_mask = np.ones_like(patch_mask)
 
@@ -253,15 +274,19 @@ class StitchingMethod(Enum):
             mosaic = cv.seamlessClone(patch, mosaic, np.uint8(patch_mask), (int(cx), int(cy)), cv.MIXED_CLONE)
         
         elif self == StitchingMethod.MULTI_CHANNEL_BLENDING:
-            patch_mask_ = np.repeat(np.uint8(np.bitwise_not(patch_mask))[..., np.newaxis], repeats=3, axis=2)  # [0, 1]
-            blending = multi_channel_blending(ref__mosaic_in_patch, patch, patch_mask_)
+            # remove the already-stitched patch
+            ref__mosaic_in_patch[patch_mask_non_shared, :] = [0, 0, 0]
+            
+            mosaic_mask_in_patch = ref__mosaic_mask_in_patch.copy()
+            mosaic_mask_in_patch = np.bitwise_xor(mosaic_mask_in_patch, patch_mask_non_shared)
+            
+            mask_patch_ = np.repeat(patch_mask[..., np.newaxis], repeats=3, axis=2)
+            mask_mosaic_ = np.repeat(mosaic_mask_in_patch[..., np.newaxis], repeats=3, axis=2)
+            blending = multi_channel_blending(patch, ref__mosaic_in_patch, mask_patch_, mask_mosaic_)
             mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :] = blending
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")
-        
-        # lastly, because matrix changes are by reference, update the total mask adding the patch mask
-        mosaic_mask[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = np.bitwise_or(ref__mosaic_mask_in_patch, patch_mask)
 
         return mosaic, mosaic_mask
 

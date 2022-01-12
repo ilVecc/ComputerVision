@@ -6,8 +6,8 @@ if __name__ == '__main__':
     stitcher = ImageStitching(
         warping_method=WarpingMethod.MANUAL_IMPL,
         seam_method=SeamMethod.ENERGY_BASED,
-        stitching_method=StitchingMethod.ALPHA_GRADIENT,
-        stitching_param=100,
+        exposure_compensation_method=ExposureCompensationMethod.GAIN,
+        stitching_method=StitchingMethod.MULTI_CHANNEL_BLENDING, stitching_param=100,
         trimming_method=TrimmingMethod.NONE,
         decimation_factor=0,
         debug=True

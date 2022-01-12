@@ -5,7 +5,7 @@ from utils.algorithms import cylindrical_warp
 
 
 def test_1():
-    img = cv.imread('imgs/r.jpg')
+    img = cv.imread('imgs/test_fruit/r.jpg')
     K = np.eye(3)
     K[0, 0] = 480
     K[1, 1] = 480

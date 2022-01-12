@@ -3,8 +3,8 @@ from pathlib import Path
 from cv2 import cv2 as cv
 import numpy as np
 
-from .stitcher_settings import WarpingMethod, SeamMethod, StitchingMethod, TrimmingMethod
-from utils.algorithms import cylindrical_warp, histeq_color
+from .stitcher_settings import WarpingMethod, SeamMethod, StitchingMethod, TrimmingMethod, ExposureCompensationMethod
+from utils.algorithms import cylindrical_warp, histeq_color, gain_intensity
 from utils.homography import apply_homogeneous
 
 
@@ -151,6 +151,7 @@ class ImageStitching(object):
     def __init__(self, folder: str = None,
                  warping_method=WarpingMethod.MANUAL_IMPL,
                  seam_method=SeamMethod.NONE,
+                 exposure_compensation_method=ExposureCompensationMethod.GAIN,
                  stitching_method=StitchingMethod.AVERAGE, stitching_param=None,
                  trimming_method=TrimmingMethod.NONE,
                  decimation_factor=0.1,
@@ -158,6 +159,7 @@ class ImageStitching(object):
         # parameters
         self.warping_method = warping_method
         self.seam_method = seam_method
+        self.exposure_compensation_method = exposure_compensation_method
         self.stitching_method = stitching_method
         self.stitching_param = stitching_param
         self.trimming_method = trimming_method
@@ -304,11 +306,11 @@ class ImageStitching(object):
         self.mosaic = np.zeros(shape=(mosaic_size[1], mosaic_size[0], 3), dtype=np.uint8)
         self.mosaic_mask = np.zeros(shape=(mosaic_size[1], mosaic_size[0]), dtype=np.bool)
         
-        # stitch each image one by one
+        # warp each image
         for image_patch in self._images:
 
             if self.print_debug:
-                print(f"Stitching image ... ", end="")
+                print(f"Warping image ... ", end="")
             
             ####
             #   warp the patch accordingly to the homography method used
@@ -317,6 +319,26 @@ class ImageStitching(object):
             # image color and mask info
             image_patch.apply_warping(self.warping_method)
             
+            if self.print_debug:
+                print(f"done")
+        
+        ####
+        #   compensate exposure
+        ####
+
+        if self.print_debug:
+            print(f"Compensating exposures ... ", end="")
+        gains = self.exposure_compensation_method(self._images)
+        for i, gain in enumerate(gains):
+            self._images[i].warped_img = gain_intensity(self._images[i].warped_img, gain)
+        if self.print_debug:
+            print(f"done")
+        
+        # stitch each image one by one
+        for image_patch in self._images:
+
+            if self.print_debug:
+                print(f"Stitching image ... ", end="")
             ####
             #   create patch to stitch onto mosaic
             ####
@@ -346,7 +368,7 @@ class ImageStitching(object):
 
             if self.print_debug:
                 print(f"done")
-
+        
         # cut the image
         self.mosaic, self.mosaic_mask = self.trimming_method(self.mosaic, self.mosaic_mask)
     
