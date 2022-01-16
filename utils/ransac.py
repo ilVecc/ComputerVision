@@ -57,7 +57,7 @@ class DistanceFunctions(object):
         return d2H, H
 
     
-def ransac(data, max_iter, thresh, samples, fit_fun, dist_fun, desired_score=0):
+def ransac(data, max_iter, thresh, samples, fit_fun, dist_fun, test_samples=lambda x, y: True, desired_score=0):
     """
     RANSAC implementation
     :param data:            numpy array
@@ -66,6 +66,7 @@ def ransac(data, max_iter, thresh, samples, fit_fun, dist_fun, desired_score=0):
     :param samples:         samples to draw in each iteration  [s]
     :param fit_fun:         fitting function
     :param dist_fun:        distance function
+    :param test_samples:    degeneracy test for the samples
     :param desired_score:   score at which RANSAC can terminate (lower is better, minimum is 0)
     :return: the best model found, with its inliers and score
     """
@@ -74,6 +75,8 @@ def ransac(data, max_iter, thresh, samples, fit_fun, dist_fun, desired_score=0):
     best_inliers = None
     for i in range(max_iter):
         idxs = np.random.choice(data.shape[0], size=samples, replace=False)
+        if not test_samples(data, idxs):
+            continue
         model = fit_fun(data, idxs)
         d, _ = dist_fun(data, model)
         inliers_set = d < thresh

@@ -1,8 +1,8 @@
 from pathlib import Path
 import cv2.cv2 as cv
 
-folder_src = Path('../imgs/colosseum/low_res')
-folder_dst = Path('../imgs/colosseum/low_res')
+folder_src = Path('../imgs/saint_peter_church/high_res')
+folder_dst = Path('../imgs/saint_peter_church/low_res')
 folder_dst.mkdir(exist_ok=True)
 
 if __name__ == '__main__':

@@ -3,8 +3,8 @@ from pathlib import Path
 from cv2 import cv2 as cv
 import numpy as np
 
-from .stitcher_settings import WarpingMethod, SeamMethod, StitchingMethod, TrimmingMethod, ExposureCompensationMethod
-from utils.algorithms import cylindrical_warp, histeq_color, gain_intensity
+from .stitcher_settings import WarpingMethod, SeamMethod, BlendingMethod, TrimmingMethod, ExposureCompensationMethod
+from utils.algorithms import cylindrical_warp, gain_rbg
 from utils.homography import apply_homogeneous
 
 
@@ -46,19 +46,18 @@ class ImagePatch(object):
         try:
             self.img = cv.imread(self.path)
             self.mask = np.ones(shape=self.img.shape[0:2], dtype=bool)
-            # TODO this is not good for exposure correction
-            # self.img = histeq_color(self.img)
 
         except Exception as ex:
             print(f"Failed to load image {self.path} due to exception:")
             print(ex)
 
         if do_cylindrical_warp:
+            scale = 4
             K = np.eye(3)
-            K[0, 0] = 3215
-            K[1, 1] = 3256
-            K[0, 2] = 2175 // 2
-            K[1, 2] = 1725 // 2
+            K[0, 0] = 3215 // scale
+            K[1, 1] = 3256 // scale
+            K[0, 2] = 2175 // scale
+            K[1, 2] = 1725 // scale
             K[0, 1] = 10
             img_rgba = cylindrical_warp(self.img, K)
             self.img = img_rgba[:, :, 0:3]
@@ -132,41 +131,30 @@ class ImagePatch(object):
         # would not be inside the given bounding box, which is centered in (0, 0).
         # The relationship of this image and the world image is still described by  H .
         
-        self.warped_img = homography_method.warp(self.img, self.H_without_offset, self.warped_bb_size)
-        self.warped_mask = homography_method.warp(np.uint8(self.mask) * 255, self.H_without_offset, self.warped_bb_size) == 255
+        self.warped_img = homography_method.warp(self.img, self.H_without_offset, self.warped_bb_size, is_mask=False)
+        self.warped_mask = homography_method.warp(np.uint8(self.mask) * 255, self.H_without_offset, self.warped_bb_size, is_mask=True) == 255
     
-    def __hash__(self):
-        return self.path.__hash__()
-    
-    def __eq__(self, other):
-        if not isinstance(other, ImagePatch):
-            return False
-        if other.path != self.path:
-            return False
-        return True
-
 
 class ImageStitching(object):
     
     def __init__(self, folder: str = None,
                  warping_method=WarpingMethod.MANUAL_IMPL,
-                 seam_method=SeamMethod.NONE,
+                 seam_method=SeamMethod.DIRECT,
                  exposure_compensation_method=ExposureCompensationMethod.GAIN,
-                 stitching_method=StitchingMethod.AVERAGE, stitching_param=None,
+                 blending_method=BlendingMethod.AVERAGE, blending_param=None,
                  trimming_method=TrimmingMethod.NONE,
-                 decimation_factor=0.1,
+                 decimation_factor=0.0,
                  debug=False):
         # parameters
         self.warping_method = warping_method
         self.seam_method = seam_method
         self.exposure_compensation_method = exposure_compensation_method
-        self.stitching_method = stitching_method
-        self.stitching_param = stitching_param
+        self.blending_method = blending_method
+        self.stitching_param = blending_param
         self.trimming_method = trimming_method
         self.decimation_factor = np.clip(decimation_factor, 0, 1)
         
         self._images = []
-        self._i = 0
         # SIFT-related
         self._train_kp = np.array([])
         self._train_desc = np.empty(shape=(0, 128), dtype=np.float32)
@@ -183,7 +171,7 @@ class ImageStitching(object):
         self.print_debug = debug
         
         if folder is not None:
-            self.process_folder(folder)
+            self.add_folder(folder)
         
     # https://ieeexplore.ieee.org/document/4604308
     def _find_matches(self, desc_new, desc_ref, k=2):
@@ -197,54 +185,37 @@ class ImageStitching(object):
         # now we need only good matches, so we create a mask using the ratio test as per Lowe's paper
         # given the two best matches, we take the best one (m1) if   m1.distance < 0.7 * m2.distance
         return [m1 for m1, m2 in matches if m1.distance < 0.7 * m2.distance]
-        
+    
     def add_folder(self, folder):
-        ret = 0
         folder = Path(folder)
         if folder.is_dir():
             # init images
             for img_path in folder.iterdir():
-                ret += self.add_image(str(img_path))
+                self.add_image(str(img_path))
         else:
             print(f"Provided path {folder} is not a directory")
-        return ret
-    
+
     def add_image(self, path):
+    
         if not Path(path).is_file():
             print(f"Provided path {path} is not a file")
             return False
         
-        img_patch = ImagePatch(path)
-        self._images.append(img_patch)
-        return True
-    
-    # FIXME we don't take into account pending images
-    def process_folder(self, folder):
-        self.add_folder(folder)
-        while self._i < len(self._images):
-            self.process_next()
-
-    # FIXME we don't take into account pending images
-    def process_image(self, path):
-        if self.add_image(path):
-            self.process_next()
-
-    def process_next(self):
         if self.print_debug:
-            print(f"Processing image {self._i + 1} ... ", end="")
+            print(f"Processing image ... ", end="")
 
         ###
         #  1) get SIFT keypoints and descriptors
         ###
-        image_patch = self._images[self._i]
-        self._i += 1
-        image_patch.load_and_sift()
-        # cv.imshow("keypoints", cv.resize(cv.drawKeypoints(image_patch._gray, image_patch.keypoints, image_patch.img), (1366, 768))); cv.waitKey(0)
+        image_patch = ImagePatch(path)
+        self._images.append(image_patch)
+        image_patch.load_and_sift(do_cylindrical_warp=True)
+        # cv.imshow("keypoints", cv.drawKeypoints(image_patch._gray, image_patch.keypoints, image_patch.img)); cv.waitKey(0)
 
         ###
         #  2) estimate homography
         ###
-        if self._i == 1:
+        if len(self._images) == 1:
             # this is the first image, no transform is needed
             H_img_to_mosaic = np.eye(3)
         else:
@@ -266,7 +237,7 @@ class ImageStitching(object):
             H_img_to_mosaic = self.warping_method(pairs)
             if H_img_to_mosaic is None:
                 print(f"Something went very bad with the homography estimation... removing this patch from list")
-                self._images.pop(self._i - 1)
+                self._images.pop()
                 return
 
         ###
@@ -282,6 +253,8 @@ class ImageStitching(object):
 
         if self.print_debug:
             print(f"done")
+            
+        return True
     
     def _update_training_set(self, image_patch):
         self._train_kp = np.append(self._train_kp, image_patch.keypoints)
@@ -328,9 +301,11 @@ class ImageStitching(object):
 
         if self.print_debug:
             print(f"Compensating exposures ... ", end="")
+            
         gains = self.exposure_compensation_method(self._images)
         for i, gain in enumerate(gains):
-            self._images[i].warped_img = gain_intensity(self._images[i].warped_img, gain)
+            self._images[i].warped_img = gain_rbg(self._images[i].warped_img, gain)
+        
         if self.print_debug:
             print(f"done")
         
@@ -359,7 +334,7 @@ class ImageStitching(object):
             ####
             #   handle color blending
             ####
-            self.mosaic, self.mosaic_mask = self.stitching_method(
+            self.mosaic, self.mosaic_mask = self.blending_method(
                 self.mosaic, self.mosaic_mask,
                 image_patch.warped_img, patch_mask_seam,
                 seam_wrt_patch,

@@ -27,13 +27,13 @@ def preprocess(img1, img2, overlap_w):
     subA = np.zeros(shape)
     subA[offset:offset+h1, :w1, :] = img1
     maskA = np.zeros(shape)
-    maskA[offset:offset+h1, :w1 - overlap_w // 2] = 1
+    maskA[offset:offset+h1, :w1] = 1
     
     # patch2_in_mosaic and patch2_mask_in_mosaic
     subB = np.zeros(shape)
     subB[:h2, w1 - overlap_w:, :] = img2
     maskB = np.zeros(shape)
-    maskB[:h2, w1 - overlap_w // 2:] = 1
+    maskB[:h2, w1 - overlap_w:] = 1
     
     return subA, subB, maskA, maskB
 

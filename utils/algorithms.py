@@ -153,58 +153,100 @@ def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_
     return w, segments, n_segments
 
 
-def multi_channel_blending(img1, img2, mask1, mask2):
-    def GaussianPyramid(img, leveln):
-        GP = [img]
-        for i in range(leveln - 1):
-            GP.append(cv.pyrDown(GP[i]))
-        return GP
+# def multi_channel_blending(img1, img2, mask1, mask2):
+#     def GaussianPyramid(img, leveln):
+#         GP = [img]
+#         for i in range(leveln - 1):
+#             GP.append(cv.pyrDown(GP[i]))
+#         return GP
+#
+#     def LaplacianPyramid(img, leveln):
+#         LP = []
+#         for i in range(leveln - 1):
+#             next_img = cv.pyrDown(img)
+#             LP.append(img - cv.pyrUp(next_img, dstsize=img.shape[1::-1]))
+#             img = next_img
+#         LP.append(img)
+#         return LP
+#
+#     def blend_pyramid(LPA, LPB, MPA, MPB):
+#         blended = []
+#         for LA, LB, MA, MB in zip(LPA, LPB, MPA, MPB):
+#             blended.append(LA * MA + LB * MB)
+#         return blended
+#
+#     def reconstruct(LS):
+#         img = LS[-1]
+#         for lev_img in LS[-2::-1]:
+#             img = cv.pyrUp(img, dstsize=lev_img.shape[1::-1])
+#             img += lev_img
+#         img = np.clip(img, 0, 255)
+#         return img
+#
+#     # Get Gaussian pyramid and Laplacian pyramid
+#     leveln = int(np.floor(np.log2(min(img1.shape[0], img2.shape[1]))))
+#
+#     mask = np.bitwise_or(mask1, mask2)
+#     img1 = img1.astype(np.float64)  # [0, 255]
+#     img2 = img2.astype(np.float64)  # [0, 255]
+#     mask1 = mask1.astype(np.float64)  # [0, 1]
+#     mask2 = mask2.astype(np.float64)  # [0, 1]
+#     LP1 = LaplacianPyramid(img1, leveln)
+#     LP2 = LaplacianPyramid(img2, leveln)
+#     MP1 = GaussianPyramid(mask1, leveln)
+#     MP2 = GaussianPyramid(mask2, leveln)
+#
+#     # Blend two Laplacian pyramids
+#     blended_pyramids = blend_pyramid(LP1, LP2, MP1, MP2)
+#
+#     # Reconstruction process
+#     blended_img = reconstruct(blended_pyramids)
+#     blended_img = np.uint8(blended_img)
+#     blended_img = blended_img * mask
+#
+#     return blended_img
 
-    def LaplacianPyramid(img, leveln):
-        LP = []
-        for i in range(leveln - 1):
-            next_img = cv.pyrDown(img)
-            LP.append(img - cv.pyrUp(next_img, dstsize=img.shape[1::-1]))
-            img = next_img
-        LP.append(img)
-        return LP
 
-    def blend_pyramid(LPA, LPB, MPA, MPB):
-        blended = []
-        for LA, LB, MA, MB in zip(LPA, LPB, MPA, MPB):
-            blended.append(LA * MA + LB * MB)
-        return blended
+def multi_channel_blending(A, B, MA, MB):
+    
+    num_levels = int(np.floor(np.log2(min(A.shape[0], B.shape[1]))))
+    
+    # gaussian pyramid
+    gpA = [np.float32(A.copy())]
+    gpB = [np.float32(B.copy())]
+    gpMA = [np.float32(MA.copy())]
+    gpMB = [np.float32(MB.copy())]
+    for i in range(num_levels):
+        gpA.append(cv.pyrDown(gpA[i]))
+        gpB.append(cv.pyrDown(gpB[i]))
+        gpMA.append(cv.pyrDown(gpMA[i]))
+        gpMB.append(cv.pyrDown(gpMB[i]))
+    
+    # laplacian pyramid
+    gpMAr = gpMA[::-1]
+    gpMBr = gpMB[::-1]
+    lpA = [gpA[num_levels]]
+    lpB = [gpB[num_levels]]
+    for i in range(num_levels, 0, -1):
+        size = gpA[i - 1].shape[1::-1]
+        LA = gpA[i - 1] - cv.pyrUp(gpA[i], dstsize=size)
+        LB = gpB[i - 1] - cv.pyrUp(gpB[i], dstsize=size)
+        lpA.append(LA)
+        lpB.append(LB)
+    
+    # blend
+    LS = []
+    for la, lb, gma, gmb in zip(lpA, lpB, gpMAr, gpMBr):
+        ls = la * gma + lb * gmb
+        LS.append(ls)
+    
+    # reconstruct
+    ls_ = LS[0]
+    for lev_img in LS[1:]:
+        ls_ = lev_img + cv.pyrUp(ls_, dstsize=lev_img.shape[1::-1])
+    ls_ = np.clip(ls_, 0, 255)
 
-    def reconstruct(LS):
-        img = LS[-1]
-        for lev_img in LS[-2::-1]:
-            img = cv.pyrUp(img, dstsize=lev_img.shape[1::-1])
-            img += lev_img
-        img = np.clip(img, 0, 255)
-        return img
-
-    # Get Gaussian pyramid and Laplacian pyramid
-    leveln = int(np.floor(np.log2(min(img1.shape[0], img2.shape[1]))))
-
-    mask = np.bitwise_or(mask1, mask2)
-    img1 = img1.astype(np.float64)  # [0, 255]
-    img2 = img2.astype(np.float64)  # [0, 255]
-    mask1 = mask1.astype(np.float64)  # [0, 1]
-    mask2 = mask2.astype(np.float64)  # [0, 1]
-    LP1 = LaplacianPyramid(img1, leveln)
-    LP2 = LaplacianPyramid(img2, leveln)
-    MP1 = GaussianPyramid(mask1, leveln)
-    MP2 = GaussianPyramid(mask2, leveln)
-
-    # Blend two Laplacian pyramids
-    blended_pyramids = blend_pyramid(LP1, LP2, MP1, MP2)
-
-    # Reconstruction process
-    blended_img = reconstruct(blended_pyramids)
-    blended_img = np.uint8(blended_img)
-    blended_img = blended_img * mask
-
-    return blended_img
+    return np.uint8(ls_)
 
 
 # https://docs.opencv.org/3.4/d3/d05/tutorial_py_table_of_contents_contours.html
@@ -285,23 +327,38 @@ def cylindrical_warp(img, K):
     X = np.stack([x_i, y_i, np.ones_like(x_i)], axis=-1).reshape(h_ * w_, 3)  # to homog
     X = X @ np.linalg.inv(K).T  # normalized coords  [ (np.linalg.inv(K) @ X.T).T ]
 
-    # calculate cylindrical coords (sin\theta, h, cos\theta)
+    # calculate cylindrical coords (sin(θ), h, cos(θ)
     A = np.stack([np.sin(X[:, 0]), X[:, 1], np.cos(X[:, 0])], axis=-1).reshape(w_ * h_, 3)
     B = A @ K.T  # project back to image-pixels plane  [ (K @ A.T).T ]
     B = B[:, :-1] / B[:, [-1]]  # back from homog coords
-
-    # make sure warp coords only within image bounds
-    B[(B[:, 0] < 0) | (B[:, 0] >= w_) | (B[:, 1] < 0) | (B[:, 1] >= h_)] = -1
     B = B.reshape(h_, w_, -1)
+    B = B.astype(np.float32)
+    
+    # make sure warp coords only within image bounds
+    C = B.copy()
+    C[(C[:, :, 0] < 0) | (C[:, :, 0] >= w_) | (C[:, :, 1] < 0) | (C[:, :, 1] >= h_)] = -1
+    # the line above breaks reflection! the following implements it just for the color part
+    B = abs(B)
+    B[B[:, :, 0] >= w_] = w_ - (B[B[:, :, 0] >= w_] - w_)
+    B[B[:, :, 1] >= h_] = h_ - (B[B[:, :, 1] >= h_] - h_)
 
     # warp the image according to cylindrical coords
     img_rgba = cv.cvtColor(img, cv.COLOR_BGR2BGRA)  # for transparent borders...
     img_rgba_warped = cv.remap(
         img_rgba,
-        map1=B[:, :, 0].astype(np.float32),
-        map2=B[:, :, 1].astype(np.float32),
+        map1=B[:, :, 0],  # map_x
+        map2=B[:, :, 1],  # map_y
         interpolation=cv.INTER_AREA,
-        borderMode=cv.BORDER_TRANSPARENT
+        borderMode=cv.BORDER_REFLECT
+    )
+    # https://answers.opencv.org/question/89028/blending-artifacts-in-opencv-image-stitching/
+    img_rgba_warped[:, :, 3] = cv.remap(
+        img_rgba[:, :, 3],
+        map1=C[:, :, 0],
+        map2=C[:, :, 1],
+        interpolation=cv.INTER_AREA,
+        borderMode=cv.BORDER_CONSTANT,
+        borderValue=0
     )
     return img_rgba_warped
 
@@ -330,6 +387,13 @@ def gain_intensity(img, gain):
     return img
 
 
+def gain_rbg(img, gain):
+    img = np.float64(img) * gain  # equalize channels
+    img = np.clip(img, 0, 255)
+    img = np.uint8(np.round(img))
+    return img
+
+
 def overlap_mask(origin1, origin2, mask1, mask2):
     y_min = min(origin1[1], origin2[1])
     y_max = max(origin1[1] + mask1.shape[0], origin2[1] + mask2.shape[0])
@@ -355,14 +419,10 @@ def overlap_mask(origin1, origin2, mask1, mask2):
 class GainCompensator(object):
     
     def __init__(self):
-        self.similarity_thresh = 1
+        self.similarity_thresh = 1.0
         self._similarities = []
-        self._gains = np.empty(shape=())
-        self.update_gain = True
+        self._gains = np.empty(shape=(0,))
         self._nr_feeds = 1
-    
-    def can_update_gain(self):
-        return self.update_gain
     
     def apply(self, index, corner, image, mask):
         return image * self._gains[index]
@@ -370,7 +430,7 @@ class GainCompensator(object):
     # noinspection PyUnboundLocalVariable
     def feed(self, corners, images, masks):
         num_images = len(images)
-        self.prepare_similarity_mask(corners, images)
+        self.prepare_similarity_mask(corners, images, masks)
         
         for n in range(self._nr_feeds):
             if n > 0:
@@ -379,11 +439,8 @@ class GainCompensator(object):
                     images[i] = self.apply(i, corners[i], images[i], masks[i])
             
             self.single_feed(corners, images, masks)
+            accumulated_gains = self._gains.copy() if n == 0 else accumulated_gains * self._gains
             
-            if n == 0:
-                accumulated_gains = self._gains.copy()
-            else:
-                accumulated_gains = accumulated_gains * self._gains
         self._gains = accumulated_gains
         return self._gains
     
@@ -426,7 +483,6 @@ class GainCompensator(object):
                     
                     # if similarities have been set, use them
                     if len(self._similarities) > 1:
-                        assert similarity_it < len(self._similarities)
                         intersect = np.bitwise_and(intersect, self._similarities[similarity_it])
                         similarity_it += 1
                     
@@ -445,7 +501,7 @@ class GainCompensator(object):
                     I[i, j] = np.sum(np.linalg.norm(subimg1, axis=2) * intersect) / N[i, j]
                     I[j, i] = np.sum(np.linalg.norm(subimg2, axis=2) * intersect) / N[i, j]
         
-        if self.can_update_gain() or len(self._gains) != num_images:
+        if len(self._gains) != num_images:
             alpha = 0.01
             beta = 100.0
             num_eq = num_images - np.count_nonzero(skip)
@@ -485,7 +541,7 @@ class GainCompensator(object):
                     j += 1
         return self._gains
     
-    def prepare_similarity_mask(self, origins, images):
+    def prepare_similarity_mask(self, origins, images, masks):
         
         if self.similarity_thresh >= 1:
             print("  skipping similarity mask: disabled")
@@ -499,7 +555,7 @@ class GainCompensator(object):
         num_images = len(images)
         for i in range(num_images):
             for j in range(i, num_images):
-                overlap_origin, overlap = overlap_mask(origins[i], origins[j], images[i].size(), images[j].size())
+                overlap_origin, overlap = overlap_mask(origins[i], origins[j], masks[i], masks[j])
                 if overlap_origin[0] is not None:
                     subimg1 = images[i][
                               overlap_origin[1] - origins[i][1]: overlap_origin[1] - origins[i][1] + overlap.shape[0],
@@ -508,7 +564,7 @@ class GainCompensator(object):
                               overlap_origin[1] - origins[j][1]: overlap_origin[1] - origins[j][1] + overlap.shape[0],
                               overlap_origin[0] - origins[j][0]: overlap_origin[0] - origins[j][0] + overlap.shape[1]]
                     similarity = self.build_similarity_mask(subimg1, subimg2)
-                    self._similarities.append([self._similarities, similarity])
+                    self._similarities.append(similarity)
     
     def build_similarity_mask(self, src1, src2):
         
@@ -524,6 +580,7 @@ class GainCompensator(object):
         #             similarity[y, x] = 255 if diff <= similarity_threshold_ else 0
         
         similarity = (np.linalg.norm((src1 - src2) / 255.0, axis=2) <= self.similarity_thresh) * 255
+        similarity = np.uint8(similarity)
         kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
         similarity = cv.erode(similarity, kernel)
         similarity = cv.dilate(similarity, kernel)

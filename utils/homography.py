@@ -46,11 +46,44 @@ def distance_homography(pairs, H):
     m1, m2 = pairs[:, 0, :].T, pairs[:, 1, :].T
     # m1 = np.hstack([m1, np.ones(shape=(1, m1.shape[0]))])
     # m2 = np.hstack([m1, np.ones(shape=(1, m1.shape[0]))])
+    
+    # classic test
     m2_reproj = H @ m1
     # FIXME sometimes here we have a divide by zero error
     m2_reproj /= m2_reproj[2, :]
-    dist = np.linalg.norm(m2 - m2_reproj, axis=0)
+    dist2 = np.linalg.norm(m2 - m2_reproj, axis=0)
+    
+    # symmetric transfer function test
+    m1_reproj = np.linalg.inv(H) @ m2
+    # FIXME sometimes here we have a divide by zero error
+    m1_reproj /= m1_reproj[2, :]
+    dist1 = np.linalg.norm(m1 - m1_reproj, axis=0)
+    
+    # dist = dist2  # classic test
+    dist = np.linalg.norm([dist1, dist2], axis=0)  # symmetric transfer function test
+    
     return dist, m2_reproj
+
+
+def test_degenerate_samples(points, idxs):
+    src_points, dst_points = points[idxs, 0, :], points[idxs, 1, :]
+    
+    # https://doi.org/10.1007/978-3-642-17691-3_19
+    def process(pt):
+        pt = np.vstack([pt, pt[0:2, :]])
+        vec = pt[1:] - pt[:-1]
+        cross = np.cross(vec[:-1], vec[1:])[:, -1]
+        return np.sign(cross), np.any(np.abs(cross) < tol)
+
+    tol = 1e-2
+    src_sign, src_collinearity = process(src_points)
+    if src_collinearity:
+        return False
+    dst_sign, dst_collinearity = process(src_points)
+    if dst_collinearity:
+        return False
+    
+    return np.alltrue(src_sign == dst_sign)
 
 
 def apply_homogeneous(data, T):
