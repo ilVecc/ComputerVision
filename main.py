@@ -2,10 +2,11 @@ from stitching import *
 
 if __name__ == '__main__':
     stitcher = ImageStitching(
-        warping_method=WarpingMethod.CV_IMPL,
+        warping_method=WarpingMethod.MANUAL_IMPL,
+        warp_cylindrical=True,
         seam_method=SeamMethod.ENERGY_MAP_BASED,
         exposure_compensation_method=ExposureCompensationMethod.GAIN,
-        blending_method=BlendingMethod.POISSON,
+        blending_method=BlendingMethod.MULTI_BAND_BLENDING,
         trimming_method=TrimmingMethod.NONE,
         decimation_factor=0,
         debug=True
@@ -21,13 +22,13 @@ if __name__ == '__main__':
         "certosa",
         "colosseum",
         "forum",
+        "passirio",  # WORKS in CV
         "saint_peter",
         "saint_peter_church",
         "spagna_square",
-        "passirio",  # WORKS in CV
         "venice"
     ]
-    imgs_set = imgs_sets[0]
+    imgs_set = imgs_sets[2]
     stitcher.add_folder(f"imgs/{imgs_set}/low_res")
     
     stitcher.balance_warpings(use_translation=True)
@@ -44,3 +45,4 @@ if __name__ == '__main__':
     #  A simple order of the  t  component in  H  using left-to-right, top-to-bottom order would be enough
     stitcher.stitch_all()
     stitcher.save(f"imgs_results/mosaic_{imgs_set}.png")
+    # stitcher.save(f"imgs_results/mosaic.png")

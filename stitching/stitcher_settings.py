@@ -3,7 +3,8 @@ from enum import Enum, auto
 import numpy as np
 from cv2 import cv2 as cv
 
-from utils.algorithms import energy_based_seam_line, biggest_bb_in_mask, fast_color_blending, biggest_rectangle_in_mask, multi_channel_blending, GainCompensator
+from utils.algorithms import energy_based_seam_line, biggest_bb_in_mask, fast_color_blending, biggest_rectangle_in_mask, multi_band_blending, GainCompensator, \
+    multi_band_blending_masked
 from utils.homography import fit_homography, distance_homography, test_degenerate_samples
 from utils.line import fit_line2D, distance_line2D
 from utils.ransac import ransac
@@ -261,29 +262,56 @@ class BlendingMethod(Enum):
             # this way we blend the old pixels in the overlapping region (important) and the new pixels with the patch (useless, the content is already there).
             # This workaround effectively blends just the overlapping region and allows us to use the  seamlessClone()  function, which requires positioning
             # into an empty area of the mosaic, which would definitely ruin the result without these premises.
-            ref__mosaic_where_patch[mask_shared] = patch[mask_shared]
+            
+            # ref__mosaic_where_patch[mask_shared] = patch[mask_shared]
+            
             # find center of mask
-            patch_mask = np.uint8(patch_mask) * 255
-            contours, _ = cv.findContours(patch_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+            patch_mask_ = np.uint8(patch_mask) * 255
+            # kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (5, 5))
+            # patch_mask_ = cv.erode(patch_mask_, kernel)
+            contours, _ = cv.findContours(patch_mask_, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
             contour = np.vstack(contours)
             (x, y, w, h) = cv.boundingRect(contour)
             cx = w / 2 + x + patch_x_range_wrt_mosaic.start
             cy = h / 2 + y + patch_y_range_wrt_mosaic.start
             
-            mosaic = cv.seamlessClone(patch, mosaic, patch_mask, (int(cx), int(cy)), cv.MIXED_CLONE)
+            mosaic = cv.seamlessClone(patch, mosaic, patch_mask_, (int(cx), int(cy)), cv.MIXED_CLONE)
         
         elif self == BlendingMethod.MULTI_BAND_BLENDING:
             
-            # remove patch mask from mosaic mask (masks must not intersect)
-            mosaic_mask_in_patch = ref__mosaic_mask_where_patch.copy()
-            mosaic_mask_in_patch = np.bitwise_xor(mosaic_mask_in_patch, mask_shared)
+            # TODO this is not the right solution, but it's good enough
+            contours, _ = cv.findContours(np.uint8(mask_shared), cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+            if len(contours) == 0:
+                # first image
+                ref__mosaic_where_patch[patch_mask, :] = patch[patch_mask]
 
-            # make 3-channels masks
-            mask_patch_ = np.repeat(patch_mask[..., np.newaxis], repeats=3, axis=2)
-            mask_mosaic_ = np.repeat(mosaic_mask_in_patch[..., np.newaxis], repeats=3, axis=2)
+            for cont in contours:
+                x, y, w, h = cv.boundingRect(cont)
+                x_range = slice(x, x + w)
+                y_range = slice(y, y + h)
+                patch_where_shared = patch[y_range, x_range].copy()
+                patch_mask_where_shared = np.repeat(patch_mask[y_range, x_range][..., np.newaxis], repeats=3, axis=2) * 1
+                mosaic_where_shared = ref__mosaic_where_patch[y_range, x_range].copy()
 
-            blending = multi_channel_blending(patch, ref__mosaic_where_patch, mask_patch_, mask_mosaic_)
-            ref__mosaic_where_patch[patch_mask, :] = blending[patch_mask, :]
+                blending = multi_band_blending(patch_where_shared, mosaic_where_shared, patch_mask_where_shared)
+                ref__mosaic_where_patch[y_range, x_range, :] = blending
+            
+            # # TODO this doesn't work
+            # # create a patch-only mosaic and mask to be blended
+            # patch_as_mosaic = np.zeros_like(mosaic)
+            # patch_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :][patch_mask] = patch[patch_mask]
+            # patch_mask_as_mosaic = np.zeros_like(mosaic_mask, dtype=bool)
+            # patch_mask_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask
+            #
+            # # masks must be separated
+            # ref__mosaic_mask_where_patch[...] = np.bitwise_xor(ref__mosaic_mask_where_patch, mask_shared)
+            #
+            # # make 3-channels masks
+            # mask_patch_ = np.repeat(patch_mask_as_mosaic[..., np.newaxis], repeats=3, axis=2)
+            # mask_mosaic_ = np.repeat(mosaic_mask[..., np.newaxis], repeats=3, axis=2)
+            #
+            # blending = multi_band_blending_masked(patch_as_mosaic, mosaic, mask_patch_, mask_mosaic_)
+            # ref__mosaic_where_patch[patch_mask, :] = blending[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic][patch_mask, :]
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")

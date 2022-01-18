@@ -207,24 +207,21 @@ def fast_color_blending(patch, patch_mask, seam_color_in_patch, seam_coords_wrt_
 #     return blended_img
 
 
-def multi_channel_blending(A, B, MA, MB):
+def multi_band_blending(A, B, M):
     
-    num_levels = int(np.floor(np.log2(min(A.shape[0], B.shape[1]))))
+    num_levels = int(np.floor(np.log2(min(*A.shape[:2], *B.shape[:2]))))
     
     # gaussian pyramid
     gpA = [np.float32(A.copy())]
     gpB = [np.float32(B.copy())]
-    gpMA = [np.float32(MA.copy())]
-    gpMB = [np.float32(MB.copy())]
+    gpM = [np.float32(M.copy())]
     for i in range(num_levels):
         gpA.append(cv.pyrDown(gpA[i]))
         gpB.append(cv.pyrDown(gpB[i]))
-        gpMA.append(cv.pyrDown(gpMA[i]))
-        gpMB.append(cv.pyrDown(gpMB[i]))
+        gpM.append(cv.pyrDown(gpM[i]))
     
     # laplacian pyramid
-    gpMAr = gpMA[::-1]
-    gpMBr = gpMB[::-1]
+    gpMr = gpM[::-1]
     lpA = [gpA[num_levels]]
     lpB = [gpB[num_levels]]
     for i in range(num_levels, 0, -1):
@@ -236,8 +233,8 @@ def multi_channel_blending(A, B, MA, MB):
     
     # blend
     LS = []
-    for la, lb, gma, gmb in zip(lpA, lpB, gpMAr, gpMBr):
-        ls = la * gma + lb * gmb
+    for la, lb, gm in zip(lpA, lpB, gpMr):
+        ls = la * gm + lb * (1 - gm)
         LS.append(ls)
     
     # reconstruct
@@ -245,7 +242,54 @@ def multi_channel_blending(A, B, MA, MB):
     for lev_img in LS[1:]:
         ls_ = lev_img + cv.pyrUp(ls_, dstsize=lev_img.shape[1::-1])
     ls_ = np.clip(ls_, 0, 255)
+    
+    return np.uint8(ls_)
 
+
+def multi_band_blending_masked(A, B, MA, MB):
+    num_levels = int(np.floor(np.log2(min(*A.shape[:2], *B.shape[:2]))))
+    
+    # global mask
+    M = np.clip(MA + MB, 0, 1)
+    
+    # gaussian pyramid
+    gpA = [np.float32(A.copy())]
+    gpB = [np.float32(B.copy())]
+    gpMA = [np.float32(MA.copy())]
+    gpMB = [np.float32(MB.copy())]
+    gpM = [np.float32(M.copy())]
+    for i in range(num_levels):
+        gpA.append(cv.pyrDown(gpA[i]))
+        gpB.append(cv.pyrDown(gpB[i]))
+        gpMA.append(cv.pyrDown(gpM[i]))
+        gpMB.append(cv.pyrDown(gpM[i]))
+        gpM.append(cv.pyrDown(gpM[i]))
+    
+    # laplacian pyramid
+    gpMAr = gpMA[::-1]
+    gpMBr = gpMB[::-1]
+    gpMr = gpM[::-1]
+    lpA = [gpA[num_levels]]
+    lpB = [gpB[num_levels]]
+    for i in range(num_levels, 0, -1):
+        size = gpA[i - 1].shape[1::-1]
+        LA = gpA[i - 1] - cv.pyrUp(gpA[i], dstsize=size)
+        LB = gpB[i - 1] - cv.pyrUp(gpB[i], dstsize=size)
+        lpA.append(LA)
+        lpB.append(LB)
+    
+    # blend
+    LS = []
+    for la, lb, gma, gmb, gm in zip(lpA, lpB, gpMAr, gpMBr, gpMr):
+        ls = (la * gma + lb * gmb) * gm
+        LS.append(ls)
+    
+    # reconstruct
+    ls_ = LS[0]
+    for lev_img in LS[1:]:
+        ls_ = lev_img + cv.pyrUp(ls_, dstsize=lev_img.shape[1::-1])
+    ls_ = np.clip(ls_, 0, 255)
+    
     return np.uint8(ls_)
 
 
@@ -349,7 +393,7 @@ def cylindrical_warp(img, K):
         map1=B[:, :, 0],  # map_x
         map2=B[:, :, 1],  # map_y
         interpolation=cv.INTER_AREA,
-        borderMode=cv.BORDER_REFLECT
+        borderMode=cv.BORDER_REFLECT  # this is useless, everything has been mapped
     )
     # https://answers.opencv.org/question/89028/blending-artifacts-in-opencv-image-stitching/
     img_rgba_warped[:, :, 3] = cv.remap(

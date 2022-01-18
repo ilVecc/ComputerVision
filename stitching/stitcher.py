@@ -139,6 +139,7 @@ class ImageStitching(object):
     
     def __init__(self, folder: str = None,
                  warping_method=WarpingMethod.MANUAL_IMPL,
+                 warp_cylindrical=True,
                  seam_method=SeamMethod.DIRECT,
                  exposure_compensation_method=ExposureCompensationMethod.GAIN,
                  blending_method=BlendingMethod.AVERAGE, blending_param=None,
@@ -147,6 +148,7 @@ class ImageStitching(object):
                  debug=False):
         # parameters
         self.warping_method = warping_method
+        self.warp_cylindrical = warp_cylindrical
         self.seam_method = seam_method
         self.exposure_compensation_method = exposure_compensation_method
         self.blending_method = blending_method
@@ -209,7 +211,7 @@ class ImageStitching(object):
         ###
         image_patch = ImagePatch(path)
         self._images.append(image_patch)
-        image_patch.load_and_sift(do_cylindrical_warp=True)
+        image_patch.load_and_sift(do_cylindrical_warp=self.warp_cylindrical)
         # cv.imshow("keypoints", cv.drawKeypoints(image_patch._gray, image_patch.keypoints, image_patch.img)); cv.waitKey(0)
 
         ###
@@ -336,8 +338,8 @@ class ImageStitching(object):
             ####
             self.mosaic, self.mosaic_mask = self.blending_method(
                 self.mosaic, self.mosaic_mask,
-                image_patch.warped_img, patch_mask_seam,
-                seam_wrt_patch,
+                image_patch.warped_img,
+                patch_mask_seam, seam_wrt_patch,
                 patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, self.stitching_param
             )
 
@@ -392,4 +394,4 @@ class ImageStitching(object):
     def save(self, path):
         # add mask to alpha layer
         mosaic = np.dstack([self.mosaic, self.mosaic_mask * 255])
-        cv.imwrite("mosaic.png", mosaic)
+        cv.imwrite(path, mosaic)

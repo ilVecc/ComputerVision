@@ -3,7 +3,7 @@ from pathlib import Path
 
 # https://docs.opencv.org/4.x/d8/d19/tutorial_stitcher.html
 
-imgs_set = "venice"
+imgs_set = "arc"
 folder = f"imgs/{imgs_set}/low_res"
 
 imgs = []
