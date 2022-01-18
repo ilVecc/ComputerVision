@@ -295,23 +295,33 @@ class BlendingMethod(Enum):
 
                 blending = multi_band_blending(patch_where_shared, mosaic_where_shared, patch_mask_where_shared)
                 ref__mosaic_where_patch[y_range, x_range, :] = blending
-            
-            # # TODO this doesn't work
-            # # create a patch-only mosaic and mask to be blended
-            # patch_as_mosaic = np.zeros_like(mosaic)
-            # patch_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :][patch_mask] = patch[patch_mask]
-            # patch_mask_as_mosaic = np.zeros_like(mosaic_mask, dtype=bool)
-            # patch_mask_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask
+
+            # if np.count_nonzero(mosaic_mask) == 0:
+            #     # first image
+            #     ref__mosaic_where_patch[patch_mask, :] = patch[patch_mask]
+            # else:
+            #     # TODO this doesn't work
+            #     # create a patch-only mosaic and mask to be blended
+            #     patch_as_mosaic = np.zeros_like(mosaic)
+            #     patch_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic, :][patch_mask] = patch[patch_mask]
+            #     patch_mask_as_mosaic = np.zeros_like(mosaic_mask, dtype=bool)
+            #     patch_mask_as_mosaic[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic] = patch_mask
             #
-            # # masks must be separated
-            # ref__mosaic_mask_where_patch[...] = np.bitwise_xor(ref__mosaic_mask_where_patch, mask_shared)
+            #     # masks must be separated
+            #     ref__mosaic_mask_where_patch[...] = np.bitwise_xor(ref__mosaic_mask_where_patch, mask_shared)
             #
-            # # make 3-channels masks
-            # mask_patch_ = np.repeat(patch_mask_as_mosaic[..., np.newaxis], repeats=3, axis=2)
-            # mask_mosaic_ = np.repeat(mosaic_mask[..., np.newaxis], repeats=3, axis=2)
+            #     # make 3-channels masks
+            #     kernel = cv.getStructuringElement(cv.MORPH_RECT, (1, 1))
+            #     mask_patch_ = np.uint8(patch_mask_as_mosaic)
+            #     # mask_patch_ = cv.erode(mask_patch_, kernel)
+            #     mask_patch_ = np.repeat(mask_patch_[..., np.newaxis], repeats=3, axis=2)
+            #     mask_mosaic_ = np.uint8(mosaic_mask)
+            #     # mask_mosaic_ = cv.erode(mask_mosaic_, kernel)
+            #     mask_mosaic_ = np.repeat(mask_mosaic_[..., np.newaxis], repeats=3, axis=2)
             #
-            # blending = multi_band_blending_masked(patch_as_mosaic, mosaic, mask_patch_, mask_mosaic_)
-            # ref__mosaic_where_patch[patch_mask, :] = blending[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic][patch_mask, :]
+            #     blending = multi_band_blending_masked(patch_as_mosaic, mosaic, mask_patch_, mask_mosaic_)
+            #     mosaic = blending.copy()
+            #     # ref__mosaic_where_patch[patch_mask, :] = blending[patch_y_range_wrt_mosaic, patch_x_range_wrt_mosaic][patch_mask, :]
         
         else:
             raise NotImplementedError(f"{self.__class__.__name__} {self} is not implemented")

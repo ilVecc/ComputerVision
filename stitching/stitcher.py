@@ -44,7 +44,7 @@ class ImagePatch(object):
             return
         
         try:
-            self.img = cv.imread(self.path)
+            self.img = cv.imread(self.path, cv.COLOR_BGR2RGB)
             self.mask = np.ones(shape=self.img.shape[0:2], dtype=bool)
 
         except Exception as ex:

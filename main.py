@@ -45,4 +45,4 @@ if __name__ == '__main__':
     #  A simple order of the  t  component in  H  using left-to-right, top-to-bottom order would be enough
     stitcher.stitch_all()
     stitcher.save(f"imgs_results/mosaic_{imgs_set}.png")
-    # stitcher.save(f"imgs_results/mosaic.png")
+    # stitcher.save(f"mosaic.png")
